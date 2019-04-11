@@ -9,8 +9,8 @@ import os
 import time
 import random
 import torch.backends.cudnn as cudnn
-import functional.dct as dct
 from model.ResNet import ResNetCifar
+from model.compress import CompressDCT, CompressDWT
 from torch.autograd import Variable
 
 parser = argparse.ArgumentParser("cifar")
@@ -57,6 +57,19 @@ else:
     raise NotImplementedError(
         '{} dataset is not supported. Only support cifar10, cifar100 and imageNet.'.format(args.dataset))
 
+Q_table_dct = torch.tensor([
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 3],
+    [1, 1, 1, 1, 1, 1, 3, 5],
+    [1, 1, 1, 1, 1, 3, 5, 6],
+    [1, 1, 1, 1, 3, 5, 6, 7],
+    [1, 1, 1, 3, 5, 6, 7, 8],
+    [1, 1, 3, 5, 6, 7, 8, 8]
+], dtype=torch.float)
+
+Q_table_dwt = torch.tensor([0.1, 0.01, 0.1], dtype=torch.float)
+
 
 def main():
     if not torch.cuda.is_available():
@@ -81,9 +94,13 @@ def main():
     # model = nn.DataParallel(ResNetCifar().cuda())
     model = ResNetCifar(args.depth, args.classes_num).cuda()
 
-    logging.info("param size = %fMB", utils.count_parameters_in_MB(model))
-
     utils.load(model, args)
+
+    # Insert compress_block after load since compress_block not include in training phase in this case
+    compress_block_dct = CompressDCT(Q_table_dct).cuda()
+    compress_block_dwt = CompressDWT(level=3, q_table=Q_table_dwt).cuda()
+    model.compress_replace(compress_block_dwt)
+    logging.info("param size = %fMB", utils.count_parameters_in_MB(model))
 
     test_acc, test_acc_5, feature_maps = infer(test_queue, model)
 
@@ -102,7 +119,8 @@ def infer(test_queue, model):
             x = Variable(x).cuda()
             target = Variable(target).cuda(async=True)
 
-            logits, feature_maps_batch, feature_maps_dct_batch = model(x)
+            # logits, feature_maps_batch, feature_maps_dct_batch = model(x) # TODO clean up
+            logits, feature_maps_batch = model(x)
 
             prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
             n = x.size(0)
@@ -116,6 +134,7 @@ def infer(test_queue, model):
             else:
                 feature_maps = feature_maps_batch
 
+        '''
             if feature_maps_dct is not None:
                 feature_maps_dct_org = feature_maps_dct
                 feature_maps_dct = []
@@ -135,6 +154,7 @@ def infer(test_queue, model):
         print("feature_maps_dct size: ", size_flat)
         print("DCT sparsity: ", zero_cnt / size_flat)
         print("==============================================================")
+        '''
 
         zero_cnt = 0
         size_flat = 0

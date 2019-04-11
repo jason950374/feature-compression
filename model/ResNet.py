@@ -1,7 +1,6 @@
-import torch
+import copy
 import torch.nn as nn
 import torch.nn.functional as F
-import functional.dct as dct
 
 
 def conv3x3(in_planes, out_planes, stride=1):
@@ -101,9 +100,11 @@ class ResNetStages(nn.Module):
     """
     Module  of ResNet in mid stage
     :param block: Block type for ResNet, a nn.Module class
-     :param ns: Number of blocks in each downsampling stages, a list or tuple
-     :param in_planes: Input channel number for first stage"""
-    def __init__(self, block, ns, in_planes):
+    :param ns: Number of blocks in each downsampling stages, a list or tuple
+    :param in_planes: Input channel number for first stage
+    :param  compress: a module or function to compress feature map
+    """
+    def __init__(self, block, ns, in_planes, compress=None):
         super(ResNetStages, self).__init__()
         self.layers = []
         self.in_planes = in_planes
@@ -118,6 +119,7 @@ class ResNetStages(nn.Module):
             planes_cur *= 2
 
         self.layers = nn.Sequential(*self.layers)
+        self.compress = compress
 
     @staticmethod
     def _make_layer(block, in_planes, planes, blocks, stride=1):
@@ -136,27 +138,26 @@ class ResNetStages(nn.Module):
 
         return nn.Sequential(*layers), in_planes
 
+    def compress_replace(self, compress_new):
+        """
+            If replace compress method, beware initialization of parameters in new compress method
+            if compress_new is nn.Module, will perform deepcopy
+            :param compress_new:  new compress module or function
+            """
+        if isinstance(compress_new, nn.Module):
+            self.compress = copy.deepcopy(compress_new)
+        else:
+            self.compress = compress_new
+
     def forward(self, x):
         feature_maps = []  # TODO clean up
-        feature_maps_dct = []  # TODO clean up
         for indx, block in enumerate(self.layers):
             x = block(x)
-            # scale = 32
-            # x = torch.round(torch.clamp(x * scale, 0, 255)) / scale
             feature_maps.append(x.cpu())
-            X = dct.dct_2d(x)  # TODO clean up and BP path
+            if self.compress is not None:
+                x = self.compress(x)
 
-            prune_size = x.size(-1) // 2
-            for i in range(x.size(-1)):
-                if i < prune_size:
-                    X[:, :, :-(prune_size - i), -(i + 1)] = torch.clamp(torch.round(X[:, :, :-(prune_size - i), -(i + 1)] / 4), -128, 127)
-                    X[:, :, -(prune_size - i):, -(i + 1)] = torch.clamp(torch.round(X[:, :, -(prune_size - i):, -(i + 1)] / 4), -128, 127)
-                else:
-                    X[:, :, :, -(i + 1)] = torch.clamp(torch.round(X[:, :, :, -(i + 1)] / 4), -128, 127)
-            x = dct.idct_2d(X * 4)
-
-            feature_maps_dct.append(X.cpu())
-        return x, feature_maps, feature_maps_dct
+        return x, feature_maps
 
 
 class ResNetCifar(nn.Module):
@@ -192,9 +193,13 @@ class ResNetCifar(nn.Module):
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
-        x, feature_maps, feature_maps_dct = self.stages(x)  # TODO clean up
+        x, feature_maps = self.stages(x)  # TODO clean up
         x = self.avgpool(x)
         x = x.view(x.size(0), -1)
         x = self.fc(x)
 
-        return x, feature_maps, feature_maps_dct
+        return x, feature_maps
+
+    # TODO generalize
+    def compress_replace(self, compress_new):
+        self.stages.compress_replace(compress_new)

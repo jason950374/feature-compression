@@ -1,6 +1,6 @@
 import torch.nn as nn
 import pywt
-import functional.dwt.lowlevel as lowlevel
+from . import lowlevel
 import torch
 
 

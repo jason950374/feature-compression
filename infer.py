@@ -10,7 +10,7 @@ import time
 import random
 import torch.backends.cudnn as cudnn
 from model.ResNet import ResNetCifar
-from model.compress import CompressDCT, CompressDWT
+from model.compress import CompressDCT, CompressDWT, QuantiUnsign
 from torch.autograd import Variable
 
 parser = argparse.ArgumentParser("cifar")
@@ -60,15 +60,15 @@ else:
 Q_table_dct = torch.tensor([
     [1, 1, 1, 1, 1, 1, 1, 1],
     [1, 1, 1, 1, 1, 1, 1, 1],
-    [1, 1, 1, 1, 1, 1, 1, 3],
-    [1, 1, 1, 1, 1, 1, 3, 5],
-    [1, 1, 1, 1, 1, 3, 5, 6],
-    [1, 1, 1, 1, 3, 5, 6, 7],
-    [1, 1, 1, 3, 5, 6, 7, 8],
-    [1, 1, 3, 5, 6, 7, 8, 8]
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1]
 ], dtype=torch.float)
 
-Q_table_dwt = torch.tensor([0.1, 0.01, 0.1], dtype=torch.float)
+Q_table_dwt = torch.tensor([0.1, 0.1, 0.1], dtype=torch.float)
 
 
 def main():
@@ -97,12 +97,14 @@ def main():
     utils.load(model, args)
 
     # Insert compress_block after load since compress_block not include in training phase in this case
-    compress_block_dct = CompressDCT(Q_table_dct).cuda()
-    compress_block_dwt = CompressDWT(level=3, q_table=Q_table_dwt).cuda()
-    model.compress_replace(compress_block_dwt)
+    # _, maximum_fm = get_q_range(train_queue, model)
+    maximum_fm = [5.2, 6.7, 5.3, 5.8, 6.7, 7.6, 4.6, 5.7, 36]  # quick test for this ckpts
+    compress_list = compress_list_gen(args.depth, maximum_fm)
+
+    model.compress_replace(compress_list)
     logging.info("param size = %fMB", utils.count_parameters_in_MB(model))
 
-    test_acc, test_acc_5, feature_maps = infer(test_queue, model)
+    test_acc, test_acc_5 = infer(test_queue, model)
 
     logging.info('[Test] acc %.2f%%;', test_acc)
 
@@ -113,14 +115,13 @@ def infer(test_queue, model):
     model.eval()
 
     feature_maps = None
-    feature_maps_dct = None
+    fm_transforms = None
     with torch.no_grad():
         for step, (x, target) in enumerate(test_queue):
             x = Variable(x).cuda()
             target = Variable(target).cuda(async=True)
 
-            # logits, feature_maps_batch, feature_maps_dct_batch = model(x) # TODO clean up
-            logits, feature_maps_batch = model(x)
+            logits, feature_maps_batch, fm_transforms_batch = model(x) # TODO clean up
 
             prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
             n = x.size(0)
@@ -134,40 +135,199 @@ def infer(test_queue, model):
             else:
                 feature_maps = feature_maps_batch
 
-        '''
-            if feature_maps_dct is not None:
-                feature_maps_dct_org = feature_maps_dct
-                feature_maps_dct = []
-                for feature_map_dct, feature_map_dct_batch in zip(feature_maps_dct_org, feature_maps_dct_batch):
-                    feature_maps_dct.append(torch.cat((feature_map_dct, feature_map_dct_batch)))
-            else:
-                feature_maps_dct = feature_maps_dct_batch
+            # concatenate mini-batch into whole data set
+            if len(fm_transforms_batch) != 0:
+                if fm_transforms is not None:
+                    fm_transforms_org = fm_transforms
+                    fm_transforms = []
+                    for fm_transform, fm_transform_batch in zip(fm_transforms_org, fm_transforms_batch):
+                        if type(fm_transform_batch) is tuple:
+                            XL = torch.cat((fm_transform[0], fm_transform_batch[0]))
+                            XH = []
+                            for XH_level, XH_level_batch in zip(fm_transform[1], fm_transform_batch[1]):
+                                XH.append(torch.cat((XH_level, XH_level_batch)))
+
+                            fm_transforms.append((XL, XH))
+                        else:
+                            fm_transforms.append(torch.cat((fm_transform, fm_transform_batch)))
+                else:
+                    fm_transforms = fm_transforms_batch
+
+        if fm_transforms is not None:
+            zero_cnt = 0
+            size_flat = 0
+            maximun = -2 ** 40
+            minimun = 2 ** 40
+            for fm_transform in fm_transforms:
+                if type(fm_transform) is tuple:
+                    XL, XH = fm_transform
+                    zero_cnt += (XL.cuda().abs() < 10 ** -10).sum().item()
+                    size_flat += XL.size(0) * XL.size(1) * XL.size(2) * XL.size(3)
+                    max_cur = XL.cuda().max()
+                    if maximun < max_cur:
+                        maximun = max_cur
+                    min_cur = XL.cuda().min()
+                    if minimun > min_cur:
+                        minimun = min_cur
+                    for xh in XH:
+                        zero_cnt += (xh.cuda().abs() < 10 ** -10).sum().item()
+                        size_flat += xh.size(0) * xh.size(1) * xh.size(2) * xh.size(3) * xh.size(4)
+                        max_cur = xh.cuda().max()
+                        if maximun < max_cur:
+                            maximun = max_cur
+                        min_cur = xh.cuda().min()
+                        if minimun > min_cur:
+                            minimun = min_cur
+                else:
+                    zero_cnt += (fm_transform.cuda().abs() < 10 ** -10).sum().item()
+                    size_flat += fm_transform.size(0)*fm_transform.size(1)*fm_transform.size(2)*fm_transform.size(3)
+                    max_cur = fm_transform.cuda().max()
+                    if maximun < max_cur:
+                        maximun = max_cur
+                    min_cur = fm_transform.cuda().min()
+                    if minimun > min_cur:
+                        minimun = min_cur
+
+            print("==============================================================")
+            print("fm_transforms == 0: ", zero_cnt)
+            print("fm_transforms size: ", size_flat)
+            print("transform sparsity: ", zero_cnt / size_flat)
+            print("transform range ({}, {})".format(minimun, maximun))
+            print("==============================================================")
 
         zero_cnt = 0
         size_flat = 0
-        for feature_map_dct in feature_maps_dct:
-            zero_cnt += (feature_map_dct.cuda().abs() < 10 ** -10).sum().item()
-            size_flat += feature_map_dct.size(0)*feature_map_dct.size(1)*feature_map_dct.size(2)*feature_map_dct.size(3)
-
-        print("==============================================================")
-        print("feature_maps_dct == 0: ", zero_cnt)
-        print("feature_maps_dct size: ", size_flat)
-        print("DCT sparsity: ", zero_cnt / size_flat)
-        print("==============================================================")
-        '''
-
-        zero_cnt = 0
-        size_flat = 0
+        maximun = -2 ** 40
+        minimun = 2 ** 40
         for feature_map in feature_maps:
             zero_cnt += (feature_map.cuda().abs() < 10 ** -10).sum().item()
             size_flat += feature_map.size(0) * feature_map.size(1) * feature_map.size(2) * feature_map.size(3)
+            max_cur = feature_map.cuda().max()
+            if maximun < max_cur:
+                maximun = max_cur
+            min_cur = feature_map.cuda().min()
+            if minimun > min_cur:
+                minimun = min_cur
 
         print("feature_maps == 0: ", zero_cnt)
         print("feature_maps size: ", size_flat)
         print("sparsity: ", zero_cnt / size_flat)
+        print("range ({}, {})".format(minimun, maximun))
         print("==============================================================")
 
-    return top1.avg, top5.avg, feature_maps
+    return top1.avg, top5.avg
+
+
+def get_q_range(train_queue, model):
+    model.eval()
+
+    feature_maps = None
+    fm_transforms = None
+    with torch.no_grad():
+        for step, (x, target) in enumerate(train_queue):
+            x = Variable(x).cuda()
+
+            _, feature_maps_batch, fm_transforms_batch = model(x)  # TODO clean up
+
+            if feature_maps is not None:
+                feature_maps_org = feature_maps
+                feature_maps = []
+                for feature_map, feature_map_batch in zip(feature_maps_org, feature_maps_batch):
+                    feature_maps.append(torch.cat((feature_map, feature_map_batch)))
+            else:
+                feature_maps = feature_maps_batch
+
+            # concatenate mini-batch into whole data set
+            if len(fm_transforms_batch) != 0:
+                if fm_transforms is not None:
+                    fm_transforms_org = fm_transforms
+                    fm_transforms = []
+                    for fm_transform, fm_transform_batch in zip(fm_transforms_org, fm_transforms_batch):
+                        if type(fm_transform_batch) is tuple:
+                            XL = torch.cat((fm_transform[0], fm_transform_batch[0]))
+                            XH = []
+                            for XH_level, XH_level_batch in zip(fm_transform[1], fm_transform_batch[1]):
+                                XH.append(torch.cat((XH_level, XH_level_batch)))
+
+                            fm_transforms.append((XL, XH))
+                        else:
+                            fm_transforms.append(torch.cat((fm_transform, fm_transform_batch)))
+                else:
+                    fm_transforms = fm_transforms_batch
+
+        maximun = []
+        minimun = []
+        if fm_transforms is not None:
+            for fm_transform in fm_transforms:
+                max_layer = -2 ** 40
+                min_layer = 2 ** 40
+                # DWT
+                if type(fm_transform) is tuple:
+                    XL, XH = fm_transform
+                    max_cur = XL.cuda().max()
+                    if max_layer < max_cur:
+                        max_layer = max_cur
+                    min_cur = XL.cuda().min()
+                    if min_layer > min_cur:
+                        min_layer = min_cur
+                    for xh in XH:
+                        max_cur = xh.cuda().max()
+                        if max_layer < max_cur:
+                            max_layer = max_cur
+                        min_cur = xh.cuda().min()
+                        if min_layer > min_cur:
+                            min_layer = min_cur
+                # DCT
+                else:
+                    max_cur = fm_transform.cuda().max()
+                    if max_layer < max_cur:
+                        max_layer = max_cur
+                    min_cur = fm_transform.cuda().min()
+                    if min_layer > min_cur:
+                        min_layer = min_cur
+
+                maximun.append(max_layer)
+                minimun.append(min_layer)
+
+            print("==============================================================")
+            for indx, min_layer, max_layer in zip(range(len(minimun)), minimun, maximun):
+                print("transform range {}: ({}, {})".format(indx, min_layer, max_layer))
+            print("==============================================================")
+
+        maximun_fm = []
+        minimun_fm = []
+        for feature_map in feature_maps:
+            max_layer = -2 ** 40
+            min_layer = 2 ** 40
+            max_cur = feature_map.cuda().max()
+            if max_layer < max_cur:
+                max_layer = max_cur
+            min_cur = feature_map.cuda().min()
+            if min_layer > min_cur:
+                min_layer = min_cur
+            maximun_fm.append(max_layer)
+            minimun_fm.append(min_layer)
+
+        for indx, min_layer, max_layer in zip(range(len(minimun_fm)), minimun_fm, maximun_fm):
+            print("range {}: ({}, {})".format(indx, min_layer, max_layer))
+        print("==============================================================")
+
+    return minimun_fm, maximun_fm
+
+
+def compress_list_gen(depth, maximum_fm):
+    encoder_list = []
+    decoder_list = []
+    for i in range((depth - 2) // 2):
+        q_factor = maximum_fm[i] / 255
+        quantization_en = QuantiUnsign(bit=8, q_factor=q_factor)
+        # compress_block_dct = CompressDCT(Q_table_dct).cuda()
+        # compress_block_dwt = CompressDWT(level=3, q_table=Q_table_dwt).cuda()
+
+        quantization_de = QuantiUnsign(bit=8, q_factor=q_factor, is_encoder=False)
+        encoder_list.append(quantization_en)
+        decoder_list.append(quantization_de)
+    return encoder_list, decoder_list
 
 
 if __name__ == '__main__':

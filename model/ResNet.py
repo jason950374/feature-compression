@@ -102,7 +102,7 @@ class ResNetStages(nn.Module):
     :param block: Block type for ResNet, a nn.Module class
     :param ns: Number of blocks in each downsampling stages, a list or tuple
     :param in_planes: Input channel number for first stage
-    :param  compress: a module or function to compress feature map
+    :param compress: a module or function to compress feature map
     """
     def __init__(self, block, ns, in_planes, compress=None):
         super(ResNetStages, self).__init__()
@@ -119,7 +119,7 @@ class ResNetStages(nn.Module):
             planes_cur *= 2
 
         self.layers = nn.Sequential(*self.layers)
-        self.compress = compress
+        self.compress = copy.deepcopy(compress)
 
     @staticmethod
     def _make_layer(block, in_planes, planes, blocks, stride=1):
@@ -138,26 +138,51 @@ class ResNetStages(nn.Module):
 
         return nn.Sequential(*layers), in_planes
 
+    @staticmethod
+    def _to_cpu(x):
+        if type(x) is list:
+            x_cpu_list = []
+            x_list = x
+            for x in x_list:
+                x_cpu_list.append(ResNetStages._to_cpu(x))
+            return x_cpu_list
+        elif type(x) is tuple:
+            x_cpu_list = []
+            x_tuple = x
+            for x in x_tuple:
+                x_cpu_list.append(ResNetStages._to_cpu(x))
+            return tuple(x_cpu_list)
+        else:
+            return x.cpu()
+
     def compress_replace(self, compress_new):
         """
-            If replace compress method, beware initialization of parameters in new compress method
-            if compress_new is nn.Module, will perform deepcopy
-            :param compress_new:  new compress module or function
-            """
-        if isinstance(compress_new, nn.Module):
-            self.compress = copy.deepcopy(compress_new)
-        else:
-            self.compress = compress_new
+        If replace compress method, beware initialization of parameters in new compress method.
+        A compress method must be pair of encoder and decoder
+        :param compress_new:  compress_new can be a tuple of encoder-decoder pair, or tuple of
+            encoder list and decoder list
+        """
+        self.compress = copy.deepcopy(compress_new)
 
     def forward(self, x):
         feature_maps = []  # TODO clean up
+        fm_transforms = []   # TODO clean up
         for indx, block in enumerate(self.layers):
             x = block(x)
             feature_maps.append(x.cpu())
             if self.compress is not None:
-                x = self.compress(x)
+                encoders = self.compress[0]
+                decoders = self.compress[1]
+                if type(encoders) is list or type(encoders) is tuple:
+                    fm_transform = encoders[indx](x)
+                    x = decoders[indx](fm_transform)
+                    fm_transforms.append(self._to_cpu(fm_transform))
+                else:
+                    fm_transform = encoders(x)
+                    x = decoders(fm_transform)
+                    fm_transforms.append(self._to_cpu(fm_transform))
 
-        return x, feature_maps
+        return x, feature_maps, fm_transforms
 
 
 class ResNetCifar(nn.Module):
@@ -193,12 +218,12 @@ class ResNetCifar(nn.Module):
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
-        x, feature_maps = self.stages(x)  # TODO clean up
+        x, feature_maps, fm_transform = self.stages(x)  # TODO clean up
         x = self.avgpool(x)
         x = x.view(x.size(0), -1)
         x = self.fc(x)
 
-        return x, feature_maps
+        return x, feature_maps, fm_transform
 
     # TODO generalize
     def compress_replace(self, compress_new):

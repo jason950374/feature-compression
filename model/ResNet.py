@@ -175,12 +175,12 @@ class ResNetStages(nn.Module):
                 decoders = self.compress[1]
                 if type(encoders) is list or type(encoders) is tuple:
                     fm_transform = encoders[indx](x)
-                    x = decoders[indx](fm_transform)
                     fm_transforms.append(self._to_cpu(fm_transform))
+                    x = decoders[indx](fm_transform)
                 else:
                     fm_transform = encoders(x)
-                    x = decoders(fm_transform)
                     fm_transforms.append(self._to_cpu(fm_transform))
+                    x = decoders(fm_transform)
 
         return x, feature_maps, fm_transforms
 

@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+import torch.nn as nn
 import glob
 import utils
 import argparse
@@ -9,6 +10,9 @@ import os
 import time
 import random
 import torch.backends.cudnn as cudnn
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 from model.ResNet import ResNetCifar
 from model.compress import CompressDCT, CompressDWT, QuantiUnsign
 from torch.autograd import Variable
@@ -16,7 +20,8 @@ from torch.autograd import Variable
 parser = argparse.ArgumentParser("cifar")
 parser.add_argument('--dataset', type=str, default='cifar10', help='dataset')
 parser.add_argument('--batch_size', type=int, default=1024, help='batch size')
-parser.add_argument('--data', type=str, default='/home/jason/data/', help='location of the data corpus relative to home')
+parser.add_argument('--data', type=str, default='/home/jason/data/',
+                    help='location of the data corpus relative to home')
 parser.add_argument('--workers', type=int, default=4, help='workers for data loader')
 parser.add_argument('--report_freq', type=float, default=100, help='report frequency')
 parser.add_argument('--gpu', type=int, default=0, help='gpu device id')
@@ -67,8 +72,6 @@ Q_table_dct = torch.tensor([
     [1, 1, 1, 1, 1, 1, 1, 1],
     [1, 1, 1, 1, 1, 1, 1, 1]
 ], dtype=torch.float)
-
-Q_table_dwt = torch.tensor([0.1, 0.1, 0.1], dtype=torch.float)
 
 
 def main():
@@ -121,7 +124,7 @@ def infer(test_queue, model):
             x = Variable(x).cuda()
             target = Variable(target).cuda(async=True)
 
-            logits, feature_maps_batch, fm_transforms_batch = model(x) # TODO clean up
+            logits, feature_maps_batch, fm_transforms_batch = model(x)  # TODO clean up
 
             prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
             n = x.size(0)
@@ -158,11 +161,20 @@ def infer(test_queue, model):
             size_flat = 0
             maximun = -2 ** 40
             minimun = 2 ** 40
-            for fm_transform in fm_transforms:
+            for layer_num, fm_transform in enumerate(fm_transforms):
                 if type(fm_transform) is tuple:
                     XL, XH = fm_transform
+                    plt.hist(XL.view(-1))
+                    plt.savefig('{}/Layer{}_XL.png'.format(args.save, layer_num))
+                    plt.clf()
+
+                    for i, xh in enumerate(XH):
+                        plt.hist(xh.view(-1))
+                        plt.savefig('{}/Layer{}_XH_{}.png'.format(args.save, layer_num, i))
+                        plt.clf()
+
                     zero_cnt += (XL.cuda().abs() < 10 ** -10).sum().item()
-                    size_flat += XL.size(0) * XL.size(1) * XL.size(2) * XL.size(3)
+                    size_flat += XL.view(-1).size(0)
                     max_cur = XL.cuda().max()
                     if maximun < max_cur:
                         maximun = max_cur
@@ -171,7 +183,7 @@ def infer(test_queue, model):
                         minimun = min_cur
                     for xh in XH:
                         zero_cnt += (xh.cuda().abs() < 10 ** -10).sum().item()
-                        size_flat += xh.size(0) * xh.size(1) * xh.size(2) * xh.size(3) * xh.size(4)
+                        size_flat += xh.view(-1).size(0)
                         max_cur = xh.cuda().max()
                         if maximun < max_cur:
                             maximun = max_cur
@@ -180,7 +192,10 @@ def infer(test_queue, model):
                             minimun = min_cur
                 else:
                     zero_cnt += (fm_transform.cuda().abs() < 10 ** -10).sum().item()
-                    size_flat += fm_transform.size(0)*fm_transform.size(1)*fm_transform.size(2)*fm_transform.size(3)
+                    size_flat += fm_transform.view(-1).size(0)
+                    plt.hist(fm_transform.view(-1))
+                    plt.savefig('{}/Layer{}_DCT.png'.format(args.save, layer_num))
+                    plt.clf()
                     max_cur = fm_transform.cuda().max()
                     if maximun < max_cur:
                         maximun = max_cur
@@ -188,12 +203,12 @@ def infer(test_queue, model):
                     if minimun > min_cur:
                         minimun = min_cur
 
-            print("==============================================================")
-            print("fm_transforms == 0: ", zero_cnt)
-            print("fm_transforms size: ", size_flat)
-            print("transform sparsity: ", zero_cnt / size_flat)
-            print("transform range ({}, {})".format(minimun, maximun))
-            print("==============================================================")
+            logging.info("==============================================================")
+            logging.info("fm_transforms == 0: {}".format(zero_cnt))
+            logging.info("fm_transforms size: {}".format(size_flat))
+            logging.info("transform sparsity: {}".format(zero_cnt / size_flat))
+            logging.info("transform range ({}, {})".format(minimun, maximun))
+            logging.info("==============================================================")
 
         zero_cnt = 0
         size_flat = 0
@@ -201,7 +216,7 @@ def infer(test_queue, model):
         minimun = 2 ** 40
         for feature_map in feature_maps:
             zero_cnt += (feature_map.cuda().abs() < 10 ** -10).sum().item()
-            size_flat += feature_map.size(0) * feature_map.size(1) * feature_map.size(2) * feature_map.size(3)
+            size_flat += feature_map.view(-1).size(0)
             max_cur = feature_map.cuda().max()
             if maximun < max_cur:
                 maximun = max_cur
@@ -209,11 +224,11 @@ def infer(test_queue, model):
             if minimun > min_cur:
                 minimun = min_cur
 
-        print("feature_maps == 0: ", zero_cnt)
-        print("feature_maps size: ", size_flat)
-        print("sparsity: ", zero_cnt / size_flat)
-        print("range ({}, {})".format(minimun, maximun))
-        print("==============================================================")
+        logging.info("feature_maps == 0: {}".format(zero_cnt))
+        logging.info("feature_maps size: {}".format(size_flat))
+        logging.info("sparsity: {}".format(zero_cnt / size_flat))
+        logging.info("range ({}, {})".format(minimun, maximun))
+        logging.info("==============================================================")
 
     return top1.avg, top5.avg
 
@@ -320,14 +335,44 @@ def compress_list_gen(depth, maximum_fm):
     decoder_list = []
     for i in range((depth - 2) // 2):
         q_factor = maximum_fm[i] / 255
-        quantization_en = QuantiUnsign(bit=8, q_factor=q_factor)
-        # compress_block_dct = CompressDCT(Q_table_dct).cuda()
-        # compress_block_dwt = CompressDWT(level=3, q_table=Q_table_dwt).cuda()
 
-        quantization_de = QuantiUnsign(bit=8, q_factor=q_factor, is_encoder=False)
-        encoder_list.append(quantization_en)
-        decoder_list.append(quantization_de)
+        maximum_fm = [5.2, 6.7, 5.3, 5.8, 6.7, 7.6, 4.6, 5.7, 36]
+        if i < 8:
+            q_table_dwt = torch.tensor([0.1, 0.1, 0.1, 0.1], dtype=torch.float)
+            q_list_dct = [150, 50, 50, 50, 50, 50, 50, 50,
+                          100, 100, 100, 100, 100, 100, 200]
+        else:
+            q_table_dwt = torch.tensor([10**6, 10**6, 10**6, 1], dtype=torch.float)
+            q_list_dct = [150, 10**6, 10**6, 10**6, 10**6, 10**6, 10**6, 10**6,
+                          10**6, 10**6, 10**6, 10**6, 10**6, 10**6, 10**6]
+        q_table_dwt = q_table_dwt * 255 / maximum_fm[i]
+
+        encoder_seq = [
+            QuantiUnsign(bit=8, q_factor=q_factor).cuda(),
+            CompressDCT(q_table_dct_gen(q_list_dct)).cuda(),
+            # CompressDWT(level=3, q_table=q_table_dwt).cuda()
+        ]
+        decoder_seq = [
+            # CompressDWT(level=3, q_table=q_table_dwt, is_encoder=False).cuda(),
+            CompressDCT(q_table_dct_gen(q_list_dct), is_encoder=False).cuda(),
+            QuantiUnsign(bit=8, q_factor=q_factor, is_encoder=False).cuda()
+        ]
+
+        encoder_list.append(nn.Sequential(*encoder_seq))
+        decoder_list.append(nn.Sequential(*decoder_seq))
     return encoder_list, decoder_list
+
+
+def q_table_dct_gen(q_list=None):
+    assert len(q_list) == 15, "q_list must be 15 values form low to high band"
+    if type(q_list) is not torch.Tensor:
+        q_list = torch.tensor(q_list, dtype=torch.float)
+    q_table = torch.ones(8, 8)
+    if q_list is not None:
+        for i in range(8):
+            q_table[i, :] = q_list[i:i + 8]
+
+    return q_table
 
 
 if __name__ == '__main__':

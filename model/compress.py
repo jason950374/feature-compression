@@ -12,7 +12,7 @@ class EncoderDecoderPair(nn.Module):
         raise NotImplementedError
 
 
-# TODO clamp not included yet
+# TODO clamp adjust
 class CompressDCT(EncoderDecoderPair):
     """
         Compress with DCT and Q table
@@ -38,22 +38,22 @@ class CompressDCT(EncoderDecoderPair):
             for i_h in range(H // 8):
                 for i_w in range(W // 8):
                     X = my_f.dct_2d(x[..., 8*i_h:8*(i_h+1), 8*i_w:8*(i_w+1)])
-                    X = torch.round((X / q_table))
+                    X = torch.round((X / q_table)).clamp(-128, 127)
                     fm_transform[..., 8 * i_h:8 * (i_h + 1), 8 * i_w:8 * (i_w + 1)] = X
 
                 if r_w != 0:
                     X = my_f.dct_2d(x[..., 8*i_h:8*(i_h+1), -r_w:])
-                    X = torch.round((X / q_table[..., -r_w:]))
+                    X = torch.round((X / q_table[..., -r_w:])).clamp(-128, 127)
                     fm_transform[..., 8 * i_h:8 * (i_h + 1), -r_w:] = X
 
             if r_h != 0:
                 for i_w in range(W // 8):
                     X = my_f.dct_2d(x[..., -r_h:, 8 * i_w:8 * (i_w + 1)])
-                    X = torch.round((X / q_table[..., -r_h:, :]))
+                    X = torch.round((X / q_table[..., -r_h:, :])).clamp(-128, 127)
                     fm_transform[..., -r_h:, 8 * i_w:8 * (i_w + 1)] = X
                 if r_w != 0:
                     X = my_f.dct_2d(x[..., -r_h:, -r_w:])
-                    X = torch.round((X / q_table[..., -r_h:, -r_w:]))
+                    X = torch.round((X / q_table[..., -r_h:, -r_w:])).clamp(-128, 127)
                     fm_transform[..., -r_h:, -r_w:] = X
             return fm_transform
         else:
@@ -76,7 +76,8 @@ class CompressDCT(EncoderDecoderPair):
                     x[..., -r_h:, -r_w:] = my_f.idct_2d(X * q_table[..., -r_h:, -r_w:])
             return x
 
-# TODO clamp not included yet
+
+# TODO clamp adjust
 class CompressDWT(EncoderDecoderPair):
     """
             Compress with DWT and Q table
@@ -89,7 +90,7 @@ class CompressDWT(EncoderDecoderPair):
         if q_table is None:
             self.register_buffer('q_table', torch.ones(level))
         else:
-            assert q_table.size() == (level,)
+            assert q_table.size() == (level + 1,)
             self.register_buffer('q_table', q_table)
         self.level = level
         if is_encoder:
@@ -102,16 +103,16 @@ class CompressDWT(EncoderDecoderPair):
         if self.is_encoder:
             assert len(x.size()) == 4, "Dimension of x need to be 4, which corresponds to (N, C, H, W)"
             XL, XH = self.DWT(x)
-            XL = torch.round(XL * 1)
+            XL = torch.round(XL / self.q_table[-1]).clamp(-128, 127)
             for i in range(self.level):
-                XH[i] = torch.round(XH[i] / self.q_table[i])
+                XH[i] = torch.round(XH[i] / self.q_table[i]).clamp(-128, 127)
 
             return XL, XH
 
         else:
             assert len(x) == 2, "Must be tuple include LL and Hs"
             XL, XH = x
-            XL = XL / 1
+            XL = XL * self.q_table[-1]
             for i in range(self.level):
                 XH[i] = XH[i] * self.q_table[i]
 
@@ -141,5 +142,4 @@ class QuantiUnsign(EncoderDecoderPair):
             return x
         else:
             x = x * self.q_factor
-
             return x

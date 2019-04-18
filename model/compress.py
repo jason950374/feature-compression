@@ -1,10 +1,14 @@
 import torch.nn as nn
 import torch
 import functional as my_f
+from collections import OrderedDict
 
 
 class EncoderDecoderPair(nn.Module):
-    def __init__(self, is_encoder):
+    is_bypass = False
+    bypass_indx = 1
+
+    def __init__(self, is_encoder=True):
         super(EncoderDecoderPair, self).__init__()
         self.is_encoder = is_encoder
 
@@ -17,6 +21,7 @@ class CompressDCT(EncoderDecoderPair):
     """
         Compress with DCT and Q table
         :param q_table: Quantization table
+        :param is_encoder (bool):  True if is encoder for CompressDCT. False if is decoder for CompressDCT
     """
     def __init__(self, q_table=None, is_encoder=True):
         super(CompressDCT, self).__init__(is_encoder)
@@ -81,9 +86,11 @@ class CompressDCT(EncoderDecoderPair):
 class CompressDWT(EncoderDecoderPair):
     """
             Compress with DWT and Q table
-            :param level: Level of DWT
-            :param q_table: Quantization table, scale is fine to coarse
-            :param wave: mother wavelet
+            Args:
+                    level (int): Level of DWT
+                    q_table (list, tuple): Quantization table, scale is fine to coarse
+                    wave (str, pywt.Wavelet, tuple or list): Mother wavelet
+                    is_encoder (bool):  True if is encoder for CompressDWT. False if is decoder for CompressDWT
         """
     def __init__(self, level=1, q_table=None, wave='haar', is_encoder=True):
         super(CompressDWT, self).__init__(is_encoder)
@@ -94,9 +101,9 @@ class CompressDWT(EncoderDecoderPair):
             self.register_buffer('q_table', q_table)
         self.level = level
         if is_encoder:
-            self.DWT = my_f.DWT(J=level, wave=wave, mode='no_pad', separable=False)
+            self.DWT = my_f.DWT(J=level, wave=wave, mode='periodization', separable=False)
         else:
-            self.IDWT = my_f.IDWT(wave=wave, mode='no_pad', separable=False)
+            self.IDWT = my_f.IDWT(wave=wave, mode='periodization', separable=False)
 
     # TODO  and BP path
     def forward(self, x):
@@ -125,13 +132,17 @@ class QuantiUnsign(EncoderDecoderPair):
     """
                 Quantization with scaling factor and bit of unsigned integer
 
-                :param bit: Bits of integer after quantization
-                :param q_factor: scale factor to match the range  after quantization
+                Args:
+                    bit (int): Bits of integer after quantization
+                    q_factor (float): scale factor to match the range  after quantization
+                    is_shift (bool): Shift range of value from unsigned to symmetric signed
+                    is_encoder (bool):  True if is encoder for QuantiUnsign. False if is decoder for QuantiUnsign
             """
-    def __init__(self, bit=8, q_factor=1, is_encoder=True):
+    def __init__(self, bit=8, q_factor=1., is_shift=False, is_encoder=True):
         super(QuantiUnsign, self).__init__(is_encoder)
         self.bit = bit
         self.q_factor = q_factor
+        self.is_shift = is_shift
 
     # TODO  and BP path
     def forward(self, x):
@@ -139,7 +150,89 @@ class QuantiUnsign(EncoderDecoderPair):
             x /= self.q_factor
             x = torch.round(x)
             x = x.clamp(0, 2 ** self.bit - 1)
+            if self.is_shift:
+                x = x - 2 ** (self.bit - 1)
             return x
         else:
+            if self.is_shift:
+                x = x + 2 ** (self.bit - 1)
             x = x * self.q_factor
+            return x
+
+
+class FtMapShiftNorm(EncoderDecoderPair):
+    """
+            Shift whole feature map with mean
+            Args:
+                is_encoder(bool):  True if is encoder for FtMapShiftNorm. False if is decoder for FtMapShiftNorm
+        """
+    is_bypass = True
+    bypass_indx = 1
+
+    def __init__(self, is_encoder=True):
+        super(FtMapShiftNorm, self).__init__(is_encoder)
+
+    def forward(self, x):
+        """
+                First dimension of input seem as batch
+                    For encoder: arg is input
+                    For decoder: arg is both input and mean
+            """
+        if self.is_encoder:
+            x_mean = x
+            for i in range(1, len(x_mean.size())):
+                x_mean = x_mean.mean(i, keepdim=True)
+            x = x - x_mean
+            return x, x_mean
+        else:
+            x, x_mean = x
+            x = x + x_mean
+            return x
+
+
+class BypassSequential(nn.Sequential, EncoderDecoderPair):
+    """
+                Sequential with bypass path
+                Input need to be EncoderDecoderPair to ensure
+                Args:
+                        *args  (List[EncoderDecoderPair], Tuple[EncoderDecoderPair]): Sequence of EncoderDecoderPair
+                        is_encoder (bool):  True if is encoder for FtMapShiftNorm.
+                                                    False if is decoder for FtMapShiftNorm
+            """
+    def __init__(self, *args, is_encoder=True):
+        for module in args:
+            assert isinstance(module, EncoderDecoderPair), "BypassSequential only accept EncoderDecoderPair"
+
+        super(BypassSequential, self).__init__()
+        super(nn.Sequential, self).__init__(is_encoder)
+
+        if len(args) == 1 and isinstance(args[0], OrderedDict):
+            for key, module in args[0].items():
+                self.add_module(key, module)
+        else:
+            for idx, module in enumerate(args):
+                self.add_module(str(idx), module)
+
+    def forward(self, x):
+        if self.is_encoder:
+            bypass_stack = []
+            for module in self._modules.values():
+                x = module(x)
+                if module.is_bypass:
+                    bypass = x[module.bypass_indx:]
+                    x = x[:module.bypass_indx]
+
+                    if len(bypass) == 1:
+                        bypass = bypass[0]
+                    if len(x) == 1:
+                        x = x[0]
+                    bypass_stack.append(bypass)
+            return x, bypass_stack
+        else:
+            x, bypass_stack = x
+            for indx, module in enumerate(self._modules.values()):
+                if module.is_bypass:
+                    x = module((x, bypass_stack[-indx]))
+                else:
+                    x = module(x)
             return x

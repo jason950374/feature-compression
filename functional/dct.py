@@ -259,7 +259,7 @@ def apply_linear_3d(x, linear_layer):
 
 
 if __name__ == '__main__':
-    x = torch.Tensor(1000, 4096)
+    x = torch.Tensor(100, 4096)
     x.normal_(0, 1)
     linear_dct = LinearDCT(4096, 'dct')
     error = torch.abs(dct(x) - linear_dct(x))
@@ -274,7 +274,7 @@ if __name__ == '__main__':
     error = torch.abs(x - idct(dct(x)))
     assert error.max().item() < 1e-5, (error, error.max())
 
-    x = torch.Tensor(100, 64, 64, 64)
+    x = torch.Tensor(10, 64, 64, 64)
     x.normal_(0, 1)
     error = torch.abs(dct_2d(x) - dct_nd(x, 2))
     assert error.max().item() < 1e-10, (error, error.max())

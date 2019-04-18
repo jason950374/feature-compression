@@ -9,7 +9,7 @@ class DWTForward(nn.Module):
 
     Args:
         J (int): Number of levels of decomposition
-        wave (str or pywt.Wavelet): Which wavelet to use. Can be a string to
+        wave (str, pywt.Wavelet, tuple or list) : Which wavelet to use. Can be a string to
             pass to pywt.Wavelet constructor, can also be a pywt.Wavelet class,
             or can be a two tuple of array-like objects for the analysis low and
             high pass filters.
@@ -32,6 +32,8 @@ class DWTForward(nn.Module):
             elif len(wave) == 4:
                 h0_col, h1_col = wave[0], wave[1]
                 h0_row, h1_row = wave[2], wave[3]
+            else:
+                raise AssertionError("wrong wave format")
 
         # Prepare the filters
         if separable:
@@ -91,8 +93,7 @@ class DWTInverse(nn.Module):
     """ Performs a 2d DWT Inverse reconstruction of an image
 
     Args:
-        wave (str or pywt.Wavelet): Which wavelet to use
-        C: deprecated, will be removed in future
+        wave (str, pywt.Wavelet, tuple or list): Which wavelet to use
     """
     def __init__(self, wave='db1', mode='zero', separable=True):
         super().__init__()
@@ -108,6 +109,8 @@ class DWTInverse(nn.Module):
             elif len(wave) == 4:
                 g0_col, g1_col = wave[0], wave[1]
                 g0_row, g1_row = wave[2], wave[3]
+            else:
+                raise AssertionError("wrong wave format")
         # Prepare the filters
         if separable:
             filts = lowlevel.prep_filt_sfb2d(g0_col, g1_col, g0_row, g1_row)
@@ -150,7 +153,6 @@ class DWTInverse(nn.Module):
             if h is None:
                 h = torch.zeros(ll.shape[0], ll.shape[1], 3, ll.shape[-2],
                                 ll.shape[-1], device=ll.device)
-
             # 'Unpad' added dimensions
             if ll.shape[-2] > h.shape[-2]:
                 ll = ll[..., :-1, :]
@@ -164,28 +166,5 @@ class DWTInverse(nn.Module):
             else:
                 c = torch.cat((ll[:, :, None], h), dim=2)
                 ll = lowlevel.sfb2d_nonsep(c, self.h, mode=self.mode)
+
         return ll
-
-
-if __name__ == '__main__':
-    x = torch.Tensor(100, 64, 64, 64).cuda()
-    x.normal_(0, 1)
-    dwt = DWTForward(J=3, wave='db1', mode='no_pad', separable=True).cuda()
-    dwti = DWTInverse(wave='db1', mode='no_pad', separable=True).cuda()
-    X = dwt(x)
-    x_reconstruct = dwti(X)
-    error = torch.abs(x - x_reconstruct)
-    assert error.max().item() < 1e-5, (error, error.max())
-
-    dwt_nonsep = DWTForward(J=3, wave='db1', mode='no_pad', separable=False).cuda()
-    dwti_nonsep = DWTInverse(wave='db1', mode='no_pad', separable=False).cuda()
-    X_nonsep = dwt_nonsep(x)
-    x_reconstruct = dwti_nonsep(X_nonsep)
-    error = torch.abs(x - x_reconstruct)
-    assert error.max().item() < 1e-6, (error, error.max())
-
-    error = torch.abs(X[0] - X_nonsep[0])
-    assert error.max().item() < 1e-6, (error, error.max())
-    for H, H_nonsep in zip(X[1], X_nonsep[1]):
-        error = torch.abs(H - H_nonsep)
-        assert error.max().item() < 1e-5, (error, error.max())

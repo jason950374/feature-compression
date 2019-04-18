@@ -174,9 +174,9 @@ class ResNetStages(nn.Module):
                 encoders = self.compress[0]
                 decoders = self.compress[1]
                 if type(encoders) is list or type(encoders) is tuple:
-                    fm_transform = encoders[indx](x)
+                    fm_transform, bypass_stack = encoders[indx](x)
                     fm_transforms.append(self._to_cpu(fm_transform))
-                    x = decoders[indx](fm_transform)
+                    x = decoders[indx]((fm_transform, bypass_stack))
                 else:
                     fm_transform = encoders(x)
                     fm_transforms.append(self._to_cpu(fm_transform))

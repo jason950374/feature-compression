@@ -7,9 +7,9 @@ import pywt
 
 def roll(x, n, dim, make_even=False):
     if n < 0:
-        n = x.shape[dim] + n
+        n = x.size(dim) + n
 
-    if make_even and x.shape[dim] % 2 == 1:
+    if make_even and x.size(dim) % 2 == 1:
         end = 1
     else:
         end = 0
@@ -80,10 +80,10 @@ def afb1d(x, h0, h1, mode='zero', dim=-1):
     # are in the right order
     if not isinstance(h0, torch.Tensor):
         h0 = torch.tensor(np.copy(np.array(h0).ravel()[::-1]),
-                          dtype=torch.float, device=x.device)
+                          dtype=torch.get_default_dtype(), device=x.device)
     if not isinstance(h1, torch.Tensor):
         h1 = torch.tensor(np.copy(np.array(h1).ravel()[::-1]),
-                          dtype=torch.float, device=x.device)
+                          dtype=torch.get_default_dtype(), device=x.device)
     L = h0.numel()
     L2 = L // 2
     shape = [1, 1, 1, 1]
@@ -102,22 +102,30 @@ def afb1d(x, h0, h1, mode='zero', dim=-1):
             else:
                 x = torch.cat((x, x[:, :, :, -1:]), dim=3)
             N += 1
+
         x = roll(x, -L2, dim=d)
         pad = (L - 1, 0) if d == 2 else (0, L - 1)
         lohi = F.conv2d(x, h, padding=pad, stride=s, groups=C)
+
         N2 = N // 2
+
         if d == 2:
-            lohi[:, :, :L2] = lohi[:, :, :L2] + lohi[:, :, N2:N2 + L2]
+            if L2 < N2:
+                lohi[:, :, :L2] = lohi[:, :, :L2] + lohi[:, :, N2:N2 + L2]
+            else:
+                for shift in range(N2, L2 + N2, N2):
+                    lohi[:, :, :N2] = lohi[:, :, :N2] + lohi[:, :, shift:shift + N2]
             lohi = lohi[:, :, :N2]
         else:
-            lohi[:, :, :, :L2] = lohi[:, :, :, :L2] + lohi[:, :, :, N2:N2 + L2]
+            if L2 < N2:
+                lohi[:, :, :, :L2] = lohi[:, :, :, :L2] + lohi[:, :, :, N2:N2 + L2]
+            else:
+                for shift in range(N2, L2 + N2, N2):
+                    lohi[:, :, :, :N2] = lohi[:, :, :, :N2] + lohi[:, :, :, shift:shift + N2]
             lohi = lohi[:, :, :, :N2]
     else:
         # Calculate the pad size
-        if mode == 'no_pad':
-            outsize = N // 2
-        else:
-            outsize = pywt.dwt_coeff_len(N, L, mode=mode)
+        outsize = pywt.dwt_coeff_len(N, L, mode=mode)
         p = 2 * (outsize - 1) - N + L
         if mode == 'zero':
             # Sadly, pytorch only allows for same padding before and after, if
@@ -132,8 +140,6 @@ def afb1d(x, h0, h1, mode='zero', dim=-1):
         elif mode == 'symmetric' or mode == 'reflect':
             pad = (0, 0, p // 2, (p + 1) // 2) if d == 2 else (p // 2, (p + 1) // 2, 0, 0)
             x = mypad(x, pad=pad, mode=mode)
-            lohi = F.conv2d(x, h, stride=s, groups=C)
-        elif mode == 'no_pad':
             lohi = F.conv2d(x, h, stride=s, groups=C)
         else:
             raise ValueError("Unkown pad type: {}".format(mode))
@@ -150,10 +156,10 @@ def sfb1d(lo, hi, g0, g1, mode='zero', dim=-1):
     # are in the right order
     if not isinstance(g0, torch.Tensor):
         g0 = torch.tensor(np.copy(np.array(g0).ravel()),
-                          dtype=torch.float, device=lo.device)
+                          dtype=torch.get_default_dtype(), device=lo.device)
     if not isinstance(g1, torch.Tensor):
         g1 = torch.tensor(np.copy(np.array(g1).ravel()),
-                          dtype=torch.float, device=lo.device)
+                          dtype=torch.get_default_dtype(), device=lo.device)
     L = g0.numel()
     shape = [1, 1, 1, 1]
     shape[d] = L
@@ -182,9 +188,6 @@ def sfb1d(lo, hi, g0, g1, mode='zero', dim=-1):
             pad = (L - 2, 0) if d == 2 else (0, L - 2)
             y = F.conv_transpose2d(lo, g0, stride=s, padding=pad, groups=C) + \
                 F.conv_transpose2d(hi, g1, stride=s, padding=pad, groups=C)
-        elif mode =='no_pad':
-            y = F.conv_transpose2d(lo, g0, stride=s, groups=C) + \
-                F.conv_transpose2d(hi, g1, stride=s, groups=C)
         else:
             raise ValueError("Unkown pad type: {}".format(mode))
 
@@ -270,8 +273,8 @@ def afb2d_nonsep(x, filts, mode='zero'):
             filts = prep_filt_afb2d_nonsep(
                 filts[0], filts[1], filts[2], filts[3], device=x.device)
     f = torch.cat([filts] * C, dim=0)
-    Ly = f.shape[2]
-    Lx = f.shape[3]
+    Ly = f.size(2)
+    Lx = f.size(3)
 
     if mode == 'periodization' or mode == 'per':
         if x.shape[2] % 2 == 1:
@@ -284,8 +287,18 @@ def afb2d_nonsep(x, filts, mode='zero'):
         stride = (2, 2)
         x = roll(roll(x, -Ly // 2, dim=2), -Lx // 2, dim=3)
         y = F.conv2d(x, f, padding=pad, stride=stride, groups=C)
-        y[:, :, :Ly // 2] += y[:, :, Ny // 2:Ny // 2 + Ly // 2]
-        y[:, :, :, :Lx // 2] += y[:, :, :, Nx // 2:Nx // 2 + Lx // 2]
+        if Ly < Ny:
+            y[:, :, :Ly // 2] += y[:, :, Ny // 2:Ny // 2 + Ly // 2]
+        else:
+            for shift in range(Ny // 2, Ly // 2 + Ny // 2, Ny // 2):
+                y[:, :, :Ny // 2] += y[:, :, shift:shift + Ny // 2]
+
+        if Lx < Nx:
+            y[:, :, :, :Lx // 2] += y[:, :, :, Nx // 2:Nx // 2 + Lx // 2]
+        else:
+            for shift in range(Nx // 2, Lx // 2 + Nx // 2, Nx // 2):
+                y[:, :, :, :Nx // 2] += y[:, :, :, shift:shift + Nx // 2]
+
         y = y[:, :, :Ny // 2, :Nx // 2]
     elif mode == 'zero' or mode == 'symmetric' or mode == 'reflect':
         # Calculate the pad size
@@ -305,12 +318,10 @@ def afb2d_nonsep(x, filts, mode='zero'):
                 x = F.pad(x, (0, 1, 0, 0))
             # Calculate the high and lowpass
             y = F.conv2d(x, f, padding=(p1 // 2, p2 // 2), stride=2, groups=C)
-        elif mode == 'symmetric' or mode == 'reflect':
+        else:  # mode: 'symmetric' or 'reflect':
             pad = (p2 // 2, (p2 + 1) // 2, p1 // 2, (p1 + 1) // 2)
             x = mypad(x, pad=pad, mode=mode)
             y = F.conv2d(x, f, stride=2, groups=C)
-    elif mode == 'no_pad':
-        y = F.conv2d(x, f, stride=2, groups=C)
     else:
         raise ValueError("Unkown pad type: {}".format(mode))
 
@@ -398,9 +409,8 @@ def sfb2d_nonsep(coeffs, filts, mode='zero'):
         else:
             raise ValueError("Unkown form for input filts")
     f = torch.cat([filts] * C, dim=0)
-    Ly = f.shape[2]
-    Lx = f.shape[3]
-
+    Ly = f.size(2)
+    Lx = f.size(3)
     x = coeffs.reshape(coeffs.shape[0], -1, coeffs.shape[-2], coeffs.shape[-1])
     if mode == 'periodization' or mode == 'per':
         ll = F.conv_transpose2d(x, f, groups=C, stride=2)
@@ -413,8 +423,6 @@ def sfb2d_nonsep(coeffs, filts, mode='zero'):
         ll = F.conv_transpose2d(x, f, padding=pad, groups=C, stride=2)
         #  ll = F.conv_transpose2d(x, f, groups=C, stride=2)
         #  ll = ll[:,:, 2*(Ly//2 - 1):-2*(Ly//2 - 1), 2*(Lx//2 - 1):2*(Lx//2 - 1)]
-    elif mode == 'no_pad':
-        ll = F.conv_transpose2d(x, f, groups=C, stride=2)
     else:
         raise ValueError("Unkown pad type: {}".format(mode))
 

@@ -14,7 +14,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from model.ResNet import ResNetCifar
-from model.compress import CompressDCT, CompressDWT, QuantiUnsign
+from model.compress import *
 from torch.autograd import Variable
 
 parser = argparse.ArgumentParser("cifar")
@@ -71,7 +71,9 @@ Q_table_dct = torch.tensor([
     [1, 1, 1, 1, 1, 1, 1, 1],
     [1, 1, 1, 1, 1, 1, 1, 1],
     [1, 1, 1, 1, 1, 1, 1, 1]
-], dtype=torch.float)
+], dtype=torch.get_default_dtype())
+
+# torch.set_default_dtype(torch.float64)
 
 
 def main():
@@ -121,6 +123,7 @@ def infer(test_queue, model):
     fm_transforms = None
     with torch.no_grad():
         for step, (x, target) in enumerate(test_queue):
+            x = x.type(torch.get_default_dtype())
             x = Variable(x).cuda()
             target = Variable(target).cuda(async=True)
 
@@ -164,12 +167,12 @@ def infer(test_queue, model):
             for layer_num, fm_transform in enumerate(fm_transforms):
                 if type(fm_transform) is tuple:
                     XL, XH = fm_transform
-                    plt.hist(XL.view(-1))
+                    plt.hist(XL.view(-1), bins=255)
                     plt.savefig('{}/Layer{}_XL.png'.format(args.save, layer_num))
                     plt.clf()
 
                     for i, xh in enumerate(XH):
-                        plt.hist(xh.view(-1))
+                        plt.hist(xh.view(-1), bins=255)
                         plt.savefig('{}/Layer{}_XH_{}.png'.format(args.save, layer_num, i))
                         plt.clf()
 
@@ -193,7 +196,7 @@ def infer(test_queue, model):
                 else:
                     zero_cnt += (fm_transform.cuda().abs() < 10 ** -10).sum().item()
                     size_flat += fm_transform.view(-1).size(0)
-                    plt.hist(fm_transform.view(-1))
+                    plt.hist(fm_transform.view(-1), bins=255)
                     plt.savefig('{}/Layer{}_DCT.png'.format(args.save, layer_num))
                     plt.clf()
                     max_cur = fm_transform.cuda().max()
@@ -333,40 +336,59 @@ def get_q_range(train_queue, model):
 def compress_list_gen(depth, maximum_fm):
     encoder_list = []
     decoder_list = []
-    for i in range((depth - 2) // 2):
+    for i in range(((depth - 2) // 2) - 1):
         q_factor = maximum_fm[i] / 255
 
-        maximum_fm = [5.2, 6.7, 5.3, 5.8, 6.7, 7.6, 4.6, 5.7, 36]
-        if i < 8:
-            q_table_dwt = torch.tensor([0.1, 0.1, 0.1, 0.1], dtype=torch.float)
-            q_list_dct = [150, 50, 50, 50, 50, 50, 50, 50,
-                          100, 100, 100, 100, 100, 100, 200]
-        else:
-            q_table_dwt = torch.tensor([10**6, 10**6, 10**6, 1], dtype=torch.float)
-            q_list_dct = [150, 10**6, 10**6, 10**6, 10**6, 10**6, 10**6, 10**6,
-                          10**6, 10**6, 10**6, 10**6, 10**6, 10**6, 10**6]
+        q_table_dwt = torch.tensor([0.1, 0.1, 0.1, 0.1], dtype=torch.get_default_dtype())
+        q_list_dct = [150, 50, 50, 50, 50, 50, 50, 50,
+                      100, 100, 100, 100, 100, 100, 200]
+
         q_table_dwt = q_table_dwt * 255 / maximum_fm[i]
 
         encoder_seq = [
-            QuantiUnsign(bit=8, q_factor=q_factor).cuda(),
-            CompressDCT(q_table_dct_gen(q_list_dct)).cuda(),
-            # CompressDWT(level=3, q_table=q_table_dwt).cuda()
+            QuantiUnsign(bit=8, q_factor=q_factor, is_shift=False).cuda(),
+            FtMapShiftNorm(),
+            # CompressDCT(q_table_dct_gen(q_list_dct)).cuda(),
+            CompressDWT(level=3, q_table=q_table_dwt, wave='db2').cuda()
         ]
         decoder_seq = [
-            # CompressDWT(level=3, q_table=q_table_dwt, is_encoder=False).cuda(),
-            CompressDCT(q_table_dct_gen(q_list_dct), is_encoder=False).cuda(),
-            QuantiUnsign(bit=8, q_factor=q_factor, is_encoder=False).cuda()
+            CompressDWT(level=3, q_table=q_table_dwt, wave='db2', is_encoder=False).cuda(),
+            # CompressDCT(q_table_dct_gen(q_list_dct), is_encoder=False).cuda(),
+            FtMapShiftNorm(is_encoder=False),
+            QuantiUnsign(bit=8, q_factor=q_factor, is_encoder=False, is_shift=False).cuda()
         ]
 
-        encoder_list.append(nn.Sequential(*encoder_seq))
-        decoder_list.append(nn.Sequential(*decoder_seq))
+        encoder_list.append(BypassSequential(*encoder_seq))
+        decoder_list.append(BypassSequential(*decoder_seq, is_encoder=False))
+
+    q_factor = maximum_fm[-1] / 255
+    q_table_dwt = torch.tensor([10 ** 6, 10 ** 6, 10 ** 6, 1], dtype=torch.get_default_dtype())
+    q_list_dct = [150, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6,
+                  10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6]
+
+    q_table_dwt = q_table_dwt * 255 / maximum_fm[-1]
+
+    encoder_seq = [
+        QuantiUnsign(bit=8, q_factor=q_factor).cuda(),
+        # CompressDCT(q_table_dct_gen(q_list_dct)).cuda(),
+        CompressDWT(level=3, q_table=q_table_dwt, wave='haar').cuda()
+    ]
+    decoder_seq = [
+        CompressDWT(level=3, q_table=q_table_dwt, wave='haar', is_encoder=False).cuda(),
+        # CompressDCT(q_table_dct_gen(q_list_dct), is_encoder=False).cuda(),
+        QuantiUnsign(bit=8, q_factor=q_factor, is_encoder=False).cuda()
+    ]
+
+    encoder_list.append(BypassSequential(*encoder_seq))
+    decoder_list.append(BypassSequential(*decoder_seq, is_encoder=False))
+
     return encoder_list, decoder_list
 
 
 def q_table_dct_gen(q_list=None):
     assert len(q_list) == 15, "q_list must be 15 values form low to high band"
     if type(q_list) is not torch.Tensor:
-        q_list = torch.tensor(q_list, dtype=torch.float)
+        q_list = torch.tensor(q_list, dtype=torch.get_default_dtype())
     q_table = torch.ones(8, 8)
     if q_list is not None:
         for i in range(8):

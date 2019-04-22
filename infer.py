@@ -113,10 +113,16 @@ def main():
     fm_hd = utils.HandlerFm()
     # tr_hd = utils.HandlerDCT_Fm()
     tr_hd = utils.HandlerDWT_Fm()
+    # tr_hd = utils.HandlerQuanti()
+
+    u_code_length_dict = utils.gen_signed_seg_dict(0, 128)
+    code_length_dict = utils.gen_seg_dict(0, 256)
+    # code_length_dict = {8: set(range(-128, 127))}
     utils.infer_base(test_queue, model, [acc_hd, fm_hd, tr_hd])
-    fm_hd.print_result(logging.info)
-    tr_hd.print_result(logging.info, plt, args.save)
-    acc_hd.print_result(logging.info)
+    fm_hd.print_result(print_fn=logging.info)
+    tr_hd.print_result(print_fn=logging.info, save=args.save, code_length_dict=u_code_length_dict)
+    # tr_hd.print_result(print_fn=logging.info, code_length_dict=code_length_dict)
+    acc_hd.print_result(print_fn=logging.info)
 
 
 def compress_list_gen(depth, maximum_fm):
@@ -135,10 +141,10 @@ def compress_list_gen(depth, maximum_fm):
             QuantiUnsign(bit=8, q_factor=q_factor, is_shift=False).cuda(),
             FtMapShiftNorm(),
             # CompressDCT(utils.q_table_dct_gen(q_list_dct)).cuda(),
-            CompressDWT(level=3, q_table=q_table_dwt, wave='db2').cuda()
+            CompressDWT(level=3, q_table=q_table_dwt, wave='haar').cuda()
         ]
         decoder_seq = [
-            CompressDWT(level=3, q_table=q_table_dwt, wave='db2', is_encoder=False).cuda(),
+            CompressDWT(level=3, q_table=q_table_dwt, wave='haar', is_encoder=False).cuda(),
             # CompressDCT(utils.q_table_dct_gen(q_list_dct), is_encoder=False).cuda(),
             FtMapShiftNorm(is_encoder=False),
             QuantiUnsign(bit=8, q_factor=q_factor, is_encoder=False, is_shift=False).cuda()
@@ -149,6 +155,7 @@ def compress_list_gen(depth, maximum_fm):
 
     q_factor = maximum_fm[-1] / 255
     q_table_dwt = torch.tensor([10 ** 6, 10 ** 6, 10 ** 6, 1], dtype=torch.get_default_dtype())
+    # q_table_dwt = torch.tensor([0.1, 0.1, 0.1, 0.1], dtype=torch.get_default_dtype())
     q_list_dct = [150, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6,
                   10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6]
 
@@ -170,8 +177,6 @@ def compress_list_gen(depth, maximum_fm):
 
     return encoder_list, decoder_list
 
-
-# def compression_rate(code_len_map):
 
 if __name__ == '__main__':
     main()

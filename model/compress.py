@@ -12,6 +12,9 @@ class EncoderDecoderPair(nn.Module):
         super(EncoderDecoderPair, self).__init__()
         self.is_encoder = is_encoder
 
+    def __init_single__(self, is_encoder):
+        self.is_encoder = is_encoder
+
     def forward(self, *input):
         raise NotImplementedError
 
@@ -102,14 +105,18 @@ class CompressDWT(EncoderDecoderPair):
         self.level = level
         if is_encoder:
             self.DWT = my_f.DWT(J=level, wave=wave, mode='periodization', separable=False)
-        else:
-            self.IDWT = my_f.IDWT(wave=wave, mode='periodization', separable=False)
+        #else:
+        self.IDWT = my_f.IDWT(wave=wave, mode='periodization', separable=False)
 
     # TODO  and BP path
     def forward(self, x):
         if self.is_encoder:
             assert len(x.size()) == 4, "Dimension of x need to be 4, which corresponds to (N, C, H, W)"
             XL, XH = self.DWT(x)
+
+            error = torch.abs(x - self.IDWT((XL, XH)))
+            assert error.max().item() < 1e-3, (error.mean(), error.max(), x)
+
             XL = torch.round(XL / self.q_table[-1]).clamp(-128, 127)
             for i in range(self.level):
                 XH[i] = torch.round(XH[i] / self.q_table[i]).clamp(-128, 127)
@@ -204,7 +211,7 @@ class BypassSequential(nn.Sequential, EncoderDecoderPair):
             assert isinstance(module, EncoderDecoderPair), "BypassSequential only accept EncoderDecoderPair"
 
         super(BypassSequential, self).__init__()
-        super(nn.Sequential, self).__init__(is_encoder)
+        super(nn.Sequential, self).__init_single__(is_encoder)
 
         if len(args) == 1 and isinstance(args[0], OrderedDict):
             for key, module in args[0].items():

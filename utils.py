@@ -1,14 +1,10 @@
 import os
 import numpy as np
 import torch
-import sys
-import pickle
 import shutil
 import torchvision.transforms as transforms
 from torch.autograd import Variable
 import torchvision.datasets as datasets
-import time
-import re
 import torchvision.datasets as dset
 
 
@@ -203,3 +199,333 @@ def getTime(seconds):
     minit = (t - ((day * 86400) + (hour * 3600))) // 60
     seconds = t - ((day * 86400) + (hour * 3600) + (minit * 60))
     return "{} days {} hours {} minutes {} seconds remaining.".format(day, hour, minit, seconds)
+
+
+def get_q_range(train_queue, model, do_print=True):
+    model.eval()
+
+    feature_maps = None
+    fm_transforms = None
+    with torch.no_grad():
+        for step, (x, target) in enumerate(train_queue):
+            x = Variable(x).cuda()
+
+            _, feature_maps_batch, fm_transforms_batch = model(x)
+
+            if feature_maps is not None:
+                feature_maps_org = feature_maps
+                feature_maps = []
+                for feature_map, feature_map_batch in zip(feature_maps_org, feature_maps_batch):
+                    feature_maps.append(torch.cat((feature_map, feature_map_batch)))
+            else:
+                feature_maps = feature_maps_batch
+
+            # concatenate mini-batch into whole data set
+            if len(fm_transforms_batch) != 0:
+                if fm_transforms is not None:
+                    fm_transforms_org = fm_transforms
+                    fm_transforms = []
+                    for fm_transform, fm_transform_batch in zip(fm_transforms_org, fm_transforms_batch):
+                        if type(fm_transform_batch) is tuple:
+                            XL = torch.cat((fm_transform[0], fm_transform_batch[0]))
+                            XH = []
+                            for XH_level, XH_level_batch in zip(fm_transform[1], fm_transform_batch[1]):
+                                XH.append(torch.cat((XH_level, XH_level_batch)))
+
+                            fm_transforms.append((XL, XH))
+                        else:
+                            fm_transforms.append(torch.cat((fm_transform, fm_transform_batch)))
+                else:
+                    fm_transforms = fm_transforms_batch
+
+        # Result of fm_transforms will not returned by this function
+        # So this section only need to be executed when do_print=True
+        if (fm_transforms is not None) and do_print:
+            maximum = []
+            minimum = []
+            for fm_transform in fm_transforms:
+                max_layer = -2 ** 40
+                min_layer = 2 ** 40
+                # DWT
+                if type(fm_transform) is tuple:
+                    XL, XH = fm_transform
+                    max_cur = XL.cuda().max()
+                    if max_layer < max_cur:
+                        max_layer = max_cur
+                    min_cur = XL.cuda().min()
+                    if min_layer > min_cur:
+                        min_layer = min_cur
+                    for xh in XH:
+                        max_cur = xh.cuda().max()
+                        if max_layer < max_cur:
+                            max_layer = max_cur
+                        min_cur = xh.cuda().min()
+                        if min_layer > min_cur:
+                            min_layer = min_cur
+                # DCT
+                else:
+                    max_cur = fm_transform.cuda().max()
+                    if max_layer < max_cur:
+                        max_layer = max_cur
+                    min_cur = fm_transform.cuda().min()
+                    if min_layer > min_cur:
+                        min_layer = min_cur
+
+                maximum.append(max_layer)
+                minimum.append(min_layer)
+
+            print("==============================================================")
+            for indx, min_layer, max_layer in zip(range(len(minimum)), minimum, maximum):
+                print("transform range {}: ({}, {})".format(indx, min_layer, max_layer))
+            print("==============================================================")
+
+        maximum_fm = []
+        minimum_fm = []
+        for feature_map in feature_maps:
+            max_layer = -2 ** 40
+            min_layer = 2 ** 40
+            max_cur = feature_map.cuda().max()
+            if max_layer < max_cur:
+                max_layer = max_cur
+            min_cur = feature_map.cuda().min()
+            if min_layer > min_cur:
+                min_layer = min_cur
+            maximum_fm.append(max_layer)
+            minimum_fm.append(min_layer)
+
+        if do_print:
+            for indx, min_layer, max_layer in zip(range(len(minimum_fm)), minimum_fm, maximum_fm):
+                print("range {}: ({}, {})".format(indx, min_layer, max_layer))
+            print("==============================================================")
+
+    return minimum_fm, maximum_fm
+
+
+def q_table_dct_gen(q_list=None):
+    assert len(q_list) == 15, "q_list must be 15 values form low to high band"
+    if type(q_list) is not torch.Tensor:
+        q_list = torch.tensor(q_list, dtype=torch.get_default_dtype())
+    q_table = torch.ones(8, 8)
+    if q_list is not None:
+        for i in range(8):
+            q_table[i, :] = q_list[i:i + 8]
+
+    return q_table
+
+
+def sparsity(in_stream):
+    """
+    :param: in_stream
+    :return:  sparsity
+    """
+    assert ((in_stream % 1) < 10 ** -5).max(), "in_stream need to be integers"
+
+
+
+def infer_base(train_queue, model, handler_list=None):
+    model.eval()
+
+    with torch.no_grad():
+        for step, (x, target) in enumerate(train_queue):
+            x = Variable(x).cuda()
+            target = target.cuda()
+
+            result = model(x)
+
+            for handler in handler_list:
+                handler.update_batch(result, (x, target))
+
+
+class InferResultHandler:
+    def update_batch(self, result, inputs=None):
+        raise NotImplementedError
+
+    def print_result(self, *args):
+        raise NotImplementedError
+
+    def reset(self):
+        self.__init__()
+
+
+class HandlerAcc(InferResultHandler):
+    def __init__(self):
+        # self.prec1 = prec1
+        # self.prec5 = prec5
+        self.top1 = AverageMeter()
+        self.top5 = AverageMeter()
+
+    def update_batch(self, result, inputs=None):
+        assert inputs is not None, "HandlerAcc need target label"
+        (x, target) = inputs
+        logits_batch, _, _ = result
+        prec1, prec5 = accuracy(logits_batch, target, topk=(1, 5))
+        n = logits_batch.size(0)
+        self.top1.update(prec1.item(), n)
+        self.top5.update(prec5.item(), n)
+
+    def print_result(self, print_fn):
+        print_fn('[Test] acc %.2f%%;', self.top1.avg)
+
+
+class HandlerFm(InferResultHandler):
+    def __init__(self):
+        self.feature_maps = None
+        self.states_updated = True
+        self.zero_cnt = 0
+        self.size_flat = 0
+        self.maximum = -2 ** 40
+        self.minimum = 2 ** 40
+
+    def update_batch(self, result, inputs=None):
+        _, feature_maps_batch, _ = result
+        self.states_updated = False
+        if self.feature_maps is not None:
+            feature_maps = []
+            for feature_map, feature_map_batch in zip(self.feature_maps, feature_maps_batch):
+                feature_maps.append(torch.cat((feature_map, feature_map_batch)))
+        else:
+            feature_maps = feature_maps_batch
+
+        self.feature_maps = feature_maps
+
+    def print_result(self, print_fn):
+        assert self.feature_maps is not None, "Please update before print"
+
+        if not self.states_updated:
+            for feature_map in self.feature_maps:
+                self.zero_cnt += (feature_map.cuda().abs() < 10 ** -10).sum().item()
+                self.size_flat += feature_map.view(-1).size(0)
+                max_cur = feature_map.cuda().max()
+                if self.maximum < max_cur:
+                    self.maximum = max_cur
+                min_cur = feature_map.cuda().min()
+                if self.minimum > min_cur:
+                    self.minimum = min_cur
+            self.states_updated = True
+
+        print_fn("==============================================================")
+        print_fn("feature_maps == 0: {}".format(self.zero_cnt))
+        print_fn("feature_maps size: {}".format(self.size_flat))
+        print_fn("sparsity: {}".format(self.zero_cnt / self.size_flat))
+        print_fn("range ({}, {})".format(self.minimum, self.maximum))
+        print_fn("==============================================================")
+
+
+class HandlerDWT_Fm(InferResultHandler):
+    def __init__(self):
+        self.fm_transforms = None
+        self.states_updated = True
+        self.zero_cnt = 0
+        self.size_flat = 0
+        self.maximum = -2 ** 40
+        self.minimum = 2 ** 40
+
+    def update_batch(self, result, inputs=None):
+        _, _, fm_transforms_batch = result
+        assert len(fm_transforms_batch) != 0, "Nothing in fm_transforms_batch!!!"
+        self.states_updated = False
+        if self.fm_transforms is not None:
+            fm_transforms = []
+            for fm_transform, fm_transform_batch in zip(self.fm_transforms, fm_transforms_batch):
+                assert type(fm_transform_batch) is tuple, "fm_transform_batch is not tuple, make sure it's DWT"
+                XL = torch.cat((fm_transform[0], fm_transform_batch[0]))
+                XH = []
+                for XH_level, XH_level_batch in zip(fm_transform[1], fm_transform_batch[1]):
+                    XH.append(torch.cat((XH_level, XH_level_batch)))
+
+                fm_transforms.append((XL, XH))
+
+        else:
+            fm_transforms = fm_transforms_batch
+
+        self.fm_transforms = fm_transforms
+
+    def print_result(self, print_fn, plt, save):
+        assert self.fm_transforms is not None, "Please update before print"
+
+        if not self.states_updated:
+            for layer_num, fm_transform in enumerate(self.fm_transforms):
+                assert type(fm_transform) is tuple, "fm_transform_batch is not tuple, make sure it's DWT"
+                XL, XH = fm_transform
+                plt.hist(XL.view(-1), bins=255)
+                plt.savefig('{}/Layer{}_XL.png'.format(save, layer_num))
+                plt.clf()
+
+                for i, xh in enumerate(XH):
+                    plt.hist(xh.view(-1), bins=255)
+                    plt.savefig('{}/Layer{}_XH_{}.png'.format(save, layer_num, i))
+                    plt.clf()
+
+                self.zero_cnt += (XL.cuda().abs() < 10 ** -10).sum().item()
+                self.size_flat += XL.view(-1).size(0)
+                max_cur = XL.cuda().max()
+                if self.maximum < max_cur:
+                    self.maximum = max_cur
+                min_cur = XL.cuda().min()
+                if self.minimum > min_cur:
+                    self.minimum = min_cur
+                for xh in XH:
+                    self.zero_cnt += (xh.cuda().abs() < 10 ** -10).sum().item()
+                    self.size_flat += xh.view(-1).size(0)
+                    max_cur = xh.cuda().max()
+                    if self.maximum < max_cur:
+                        self.maximum = max_cur
+                    min_cur = xh.cuda().min()
+                    if self.minimum > min_cur:
+                        self.minimum = min_cur
+            self.states_updated = True
+
+        print_fn("==============================================================")
+        print_fn("fm_transforms == 0: {}".format(self.zero_cnt))
+        print_fn("fm_transforms size: {}".format(self.size_flat))
+        print_fn("transform sparsity: {}".format(self.zero_cnt / self.size_flat))
+        print_fn("transform range ({}, {})".format(self.minimum, self.maximum))
+        print_fn("==============================================================")
+
+
+class HandlerDCT_Fm(InferResultHandler):
+    def __init__(self):
+        self.fm_transforms = None
+        self.states_updated = True
+        self.zero_cnt = 0
+        self.size_flat = 0
+        self.maximum = -2 ** 40
+        self.minimum = 2 ** 40
+
+    def update_batch(self, result, inputs=None):
+        _, _, fm_transforms_batch = result
+        assert len(fm_transforms_batch) != 0, "Nothing in fm_transforms_batch!!!"
+        self.states_updated = False
+        if self.fm_transforms is not None:
+            fm_transforms = []
+            for fm_transform, fm_transform_batch in zip(self.fm_transforms, fm_transforms_batch):
+                if type(fm_transform_batch) is tuple:
+                    XL = torch.cat((fm_transform[0], fm_transform_batch[0]))
+                    XH = []
+                    for XH_level, XH_level_batch in zip(fm_transform[1], fm_transform_batch[1]):
+                        XH.append(torch.cat((XH_level, XH_level_batch)))
+
+                    fm_transforms.append((XL, XH))
+                else:
+                    fm_transforms.append(torch.cat((fm_transform, fm_transform_batch)))
+        else:
+            fm_transforms = fm_transforms_batch
+
+        self.fm_transforms = fm_transforms
+
+    def print_result(self, print_fn, plt, save):
+        assert self.fm_transforms is not None, "Please update before print"
+        if not self.states_updated:
+            if self.fm_transforms is not None:
+                for layer_num, fm_transform in enumerate(self.fm_transforms):
+                    self.zero_cnt += (fm_transform.cuda().abs() < 10 ** -10).sum().item()
+                    self.size_flat += fm_transform.view(-1).size(0)
+                    plt.hist(fm_transform.view(-1), bins=255)
+                    plt.savefig('{}/Layer{}_DCT.png'.format(save, layer_num))
+                    plt.clf()
+                    max_cur = fm_transform.cuda().max()
+                    if self.maximum < max_cur:
+                        self.maximum = max_cur
+                    min_cur = fm_transform.cuda().min()
+                    if self.minimum > min_cur:
+                        self.minimum = min_cur

@@ -6,7 +6,7 @@ import pywt
 
 
 def roll(x, n, dim, make_even=False):
-    if n < 0:
+    while n < 0:
         n = x.size(dim) + n
 
     if make_even and x.size(dim) % 2 == 1:

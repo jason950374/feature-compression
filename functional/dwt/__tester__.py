@@ -7,8 +7,8 @@ if __name__ == '__main__':
     x = torch.Tensor(10, 64, 8, 8).cuda()
     # x = torch.Tensor(1, 1, 2, 2).cuda()
     # x.normal_(0, 1) * 255
-    # x.uniform_(0, 255)
-    x.fill_(1)
+    x.uniform_(0, 255)
+    # x.fill_(1)
 
     dwt = DWTForward(J=3, wave='db8', mode='per', separable=True).cuda()
     dwti = DWTInverse(wave='db8', mode='per', separable=True).cuda()

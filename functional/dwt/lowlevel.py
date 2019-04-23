@@ -111,17 +111,21 @@ def afb1d(x, h0, h1, mode='zero', dim=-1):
 
         if d == 2:
             if L2 < N2:
-                lohi[:, :, :L2] = lohi[:, :, :L2] + lohi[:, :, N2:N2 + L2]
+                lohi[:, :, :L2] += lohi[:, :, N2:N2 + L2]
             else:
                 for shift in range(N2, L2 + N2, N2):
-                    lohi[:, :, :N2] = lohi[:, :, :N2] + lohi[:, :, shift:shift + N2]
+                    lohi[:, :, :N2] += lohi[:, :, shift: shift + N2]
+                res = L2 % N2
+                lohi[:, :, :res] += lohi[:, :, L2 + N2 - res: L2 + N2]
             lohi = lohi[:, :, :N2]
         else:
             if L2 < N2:
-                lohi[:, :, :, :L2] = lohi[:, :, :, :L2] + lohi[:, :, :, N2:N2 + L2]
+                lohi[:, :, :, :L2] += lohi[:, :, :, N2:N2 + L2]
             else:
                 for shift in range(N2, L2 + N2, N2):
-                    lohi[:, :, :, :N2] = lohi[:, :, :, :N2] + lohi[:, :, :, shift:shift + N2]
+                    lohi[:, :, :, :N2] += lohi[:, :, :, shift:shift + N2]
+                res = L2 % N2
+                lohi[:, :, :, :res] += lohi[:, :, :, L2 + N2 - res: L2 + N2]
             lohi = lohi[:, :, :, :N2]
     else:
         # Calculate the pad size
@@ -177,10 +181,18 @@ def sfb1d(lo, hi, g0, g1, mode='zero', dim=-1):
         y = F.conv_transpose2d(lo, g0, stride=s, groups=C) + \
             F.conv_transpose2d(hi, g1, stride=s, groups=C)
         if d == 2:
-            y[:, :, :L - 2] = y[:, :, :L - 2] + y[:, :, N:N + L - 2]
+            if L - 2 < N:
+                y[:, :, :L - 2] += y[:, :, N:N + L - 2]
+            else:
+                for shift in range(N, L - 2 + N, N):
+                    y[:, :, :N] += y[:, :, shift:shift + N]
             y = y[:, :, :N]
         else:
-            y[:, :, :, :L - 2] = y[:, :, :, :L - 2] + y[:, :, :, N:N + L - 2]
+            if L - 2 < N:
+                y[:, :, :, :L - 2] += y[:, :, :, N:N + L - 2]
+            else:
+                for shift in range(N, L - 2 + N, N):
+                    y[:, :, :, :N] += y[:, :, :, shift:shift + N]
             y = y[:, :, :, :N]
         y = roll(y, 1 - L // 2, dim=dim)
     else:
@@ -414,15 +426,21 @@ def sfb2d_nonsep(coeffs, filts, mode='zero'):
     x = coeffs.reshape(coeffs.shape[0], -1, coeffs.shape[-2], coeffs.shape[-1])
     if mode == 'periodization' or mode == 'per':
         ll = F.conv_transpose2d(x, f, groups=C, stride=2)
-        ll[:, :, :Ly - 2] += ll[:, :, 2 * Ny:2 * Ny + Ly - 2]
-        ll[:, :, :, :Lx - 2] += ll[:, :, :, 2 * Nx:2 * Nx + Lx - 2]
+        if 2 * Ny > Ly - 2:
+            ll[:, :, :Ly - 2] += ll[:, :, 2 * Ny:2 * Ny + Ly - 2]
+        else:
+            for shift in range(2 * Ny, 2 * Ny + Ly - 2, 2 * Ny):
+                ll[:, :, :2 * Ny] += ll[:, :, shift:shift + 2 * Ny]
+        if 2 * Nx > Lx - 2:
+            ll[:, :, :, :Lx - 2] += ll[:, :, :, 2 * Nx:2 * Nx + Lx - 2]
+        else:
+            for shift in range(2 * Nx, 2 * Nx + Ly - 2, 2 * Nx):
+                ll[:, :, :, :2 * Nx] += ll[:, :, :, shift:shift + 2 * Nx]
         ll = ll[:, :, :2 * Ny, :2 * Nx]
         ll = roll(roll(ll, 1 - Ly // 2, dim=2), 1 - Lx // 2, dim=3)
     elif mode == 'symmetric' or mode == 'zero' or mode == 'reflect':
         pad = (Ly - 2, Lx - 2)
         ll = F.conv_transpose2d(x, f, padding=pad, groups=C, stride=2)
-        #  ll = F.conv_transpose2d(x, f, groups=C, stride=2)
-        #  ll = ll[:,:, 2*(Ly//2 - 1):-2*(Ly//2 - 1), 2*(Lx//2 - 1):2*(Lx//2 - 1)]
     else:
         raise ValueError("Unkown pad type: {}".format(mode))
 

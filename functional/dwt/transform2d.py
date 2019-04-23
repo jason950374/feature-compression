@@ -5,11 +5,12 @@ import torch
 
 
 class DWTForward(nn.Module):
-    """ Performs a 2d DWT Forward decomposition of an image
+    """
+    Performs a 2d DWT Forward decomposition of an image
 
     Args:
         J (int): Number of levels of decomposition
-        wave (str, pywt.Wavelet, tuple or list) : Which wavelet to use. Can be a string to
+        wave (str, pywt.Wavelet, tuple, list) : Which wavelet to use. Can be a string to
             pass to pywt.Wavelet constructor, can also be a pywt.Wavelet class,
             or can be a two tuple of array-like objects for the analysis low and
             high pass filters.
@@ -93,7 +94,7 @@ class DWTInverse(nn.Module):
     """ Performs a 2d DWT Inverse reconstruction of an image
 
     Args:
-        wave (str, pywt.Wavelet, tuple or list): Which wavelet to use
+        wave (str, pywt.Wavelet, tuple, list): Which wavelet to use
     """
     def __init__(self, wave='db1', mode='zero', separable=True):
         super().__init__()

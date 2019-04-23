@@ -7,7 +7,6 @@ from torch.autograd import Variable
 import torchvision.datasets as datasets
 import torchvision.datasets as dset
 import matplotlib
-
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
@@ -374,6 +373,8 @@ def get_bit_cnt(in_stream, code_length_dict, conti=False, dual_conti=False):
     Bit cnt for given dictionary of code length
     :param in_stream:  Input stream
     :param code_length_dict: code_length_dict, key(int) is code_length, value is iterable codes before encoding
+    :param conti: The continuous sequence of number
+    :param dual_conti: The sequence
     :return : Total length (bits)
     """
     assert ((in_stream % 1) < 10 ** -5).max(), "in_stream need to be integers"
@@ -498,7 +499,6 @@ class HandlerFm(InferResultHandler):
             print_fn = print
 
         if not self.states_updated:
-            self.code_len = 0
             for feature_map in self.feature_maps:
                 self.zero_cnt += (feature_map.cuda().abs() < 10 ** -10).sum().item()
                 self.size_flat += feature_map.view(-1).size(0)

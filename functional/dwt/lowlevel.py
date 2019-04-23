@@ -184,15 +184,25 @@ def sfb1d(lo, hi, g0, g1, mode='zero', dim=-1):
             if L - 2 < N:
                 y[:, :, :L - 2] += y[:, :, N:N + L - 2]
             else:
-                for shift in range(N, L - 2 + N, N):
+                for shift in range(N, L - 2, N):
                     y[:, :, :N] += y[:, :, shift:shift + N]
+                res = (L - 2) % N
+                if res > 0:
+                    y[:, :, :res] += y[:, :, -res:]
+                else:
+                    y[:, :, :N] += y[:, :, -N:]
             y = y[:, :, :N]
         else:
             if L - 2 < N:
                 y[:, :, :, :L - 2] += y[:, :, :, N:N + L - 2]
             else:
-                for shift in range(N, L - 2 + N, N):
+                for shift in range(N, L - 2, N):
                     y[:, :, :, :N] += y[:, :, :, shift:shift + N]
+                res = (L - 2) % N
+                if res > 0:
+                    y[:, :, :, :res] += y[:, :, :, -res:]
+                else:
+                    y[:, :, :, :N] += y[:, :, :, -N:]
             y = y[:, :, :, :N]
         y = roll(y, 1 - L // 2, dim=dim)
     else:
@@ -429,13 +439,25 @@ def sfb2d_nonsep(coeffs, filts, mode='zero'):
         if 2 * Ny > Ly - 2:
             ll[:, :, :Ly - 2] += ll[:, :, 2 * Ny:2 * Ny + Ly - 2]
         else:
-            for shift in range(2 * Ny, 2 * Ny + Ly - 2, 2 * Ny):
+            for shift in range(2 * Ny, Ly - 2, 2 * Ny):
                 ll[:, :, :2 * Ny] += ll[:, :, shift:shift + 2 * Ny]
+            res = (2 * Ny + Ly - 2) % (2 * Ny)
+            if res != 0:
+                ll[:, :, :res] += ll[:, :, -res:]
+            else:
+                ll[:, :, :2 * Ny] += ll[:, :, -2 * Ny:]
+
         if 2 * Nx > Lx - 2:
             ll[:, :, :, :Lx - 2] += ll[:, :, :, 2 * Nx:2 * Nx + Lx - 2]
         else:
-            for shift in range(2 * Nx, 2 * Nx + Ly - 2, 2 * Nx):
+            for shift in range(2 * Nx, Ly - 2, 2 * Nx):
                 ll[:, :, :, :2 * Nx] += ll[:, :, :, shift:shift + 2 * Nx]
+            res = (2 * Nx + Ly - 2) % (2 * Nx)
+            if res != 0:
+                ll[:, :, :, :res] += ll[:, :, :, -res:]
+            else:
+                ll[:, :, :, :2 * Nx] += ll[:, :, :, -2 * Nx:]
+
         ll = ll[:, :, :2 * Ny, :2 * Nx]
         ll = roll(roll(ll, 1 - Ly // 2, dim=2), 1 - Lx // 2, dim=3)
     elif mode == 'symmetric' or mode == 'zero' or mode == 'reflect':

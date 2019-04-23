@@ -113,19 +113,25 @@ def afb1d(x, h0, h1, mode='zero', dim=-1):
             if L2 < N2:
                 lohi[:, :, :L2] += lohi[:, :, N2:N2 + L2]
             else:
-                for shift in range(N2, L2 + N2, N2):
+                for shift in range(N2, L2, N2):
                     lohi[:, :, :N2] += lohi[:, :, shift: shift + N2]
                 res = L2 % N2
-                lohi[:, :, :res] += lohi[:, :, L2 + N2 - res: L2 + N2]
+                if res != 0:
+                    lohi[:, :, :res] += lohi[:, :, -res:]
+                else:
+                    lohi[:, :, :N2] += lohi[:, :, -N2:]
             lohi = lohi[:, :, :N2]
         else:
             if L2 < N2:
                 lohi[:, :, :, :L2] += lohi[:, :, :, N2:N2 + L2]
             else:
-                for shift in range(N2, L2 + N2, N2):
+                for shift in range(N2, L2, N2):
                     lohi[:, :, :, :N2] += lohi[:, :, :, shift:shift + N2]
                 res = L2 % N2
-                lohi[:, :, :, :res] += lohi[:, :, :, L2 + N2 - res: L2 + N2]
+                if res != 0:
+                    lohi[:, :, :, :res] += lohi[:, :, :, -res:]
+                else:
+                    lohi[:, :, :, :N2] += lohi[:, :, :, -N2:]
             lohi = lohi[:, :, :, :N2]
     else:
         # Calculate the pad size
@@ -312,14 +318,24 @@ def afb2d_nonsep(x, filts, mode='zero'):
         if Ly < Ny:
             y[:, :, :Ly // 2] += y[:, :, Ny // 2:Ny // 2 + Ly // 2]
         else:
-            for shift in range(Ny // 2, Ly // 2 + Ny // 2, Ny // 2):
+            for shift in range(Ny // 2, Ly // 2, Ny // 2):
                 y[:, :, :Ny // 2] += y[:, :, shift:shift + Ny // 2]
+            res = (Ly // 2) % (Ny // 2)
+            if res != 0:
+                y[:, :, :res] += y[:, :, -res:]
+            else:
+                y[:, :, :Ny // 2] += y[:, :, -Ny // 2:]
 
         if Lx < Nx:
             y[:, :, :, :Lx // 2] += y[:, :, :, Nx // 2:Nx // 2 + Lx // 2]
         else:
-            for shift in range(Nx // 2, Lx // 2 + Nx // 2, Nx // 2):
+            for shift in range(Nx // 2, Lx // 2, Nx // 2):
                 y[:, :, :, :Nx // 2] += y[:, :, :, shift:shift + Nx // 2]
+            res = (Lx // 2) % (Nx // 2)
+            if res != 0:
+                y[:, :, :, :res] += y[:, :, :, -res:]
+            else:
+                y[:, :, :, :Nx // 2] += y[:, :, :, -Nx // 2:]
 
         y = y[:, :, :Ny // 2, :Nx // 2]
     elif mode == 'zero' or mode == 'symmetric' or mode == 'reflect':

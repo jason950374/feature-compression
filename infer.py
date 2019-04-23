@@ -34,7 +34,7 @@ parser.add_argument('--k', type=int, default=0, help="k for exponential-Golomb")
 
 args = parser.parse_args()
 args.save = 'ckpts/test_{}_resnet{}_{}_k{}_{}'.format(args.dataset, args.depth,
-                                                  args.wavelet, args.wavelet, time.strftime("%m%d_%H%M%S"))
+                                                  args.wavelet, args.k, time.strftime("%m%d_%H%M%S"))
 
 utils.create_exp_dir(args.save, scripts_to_save=glob.glob('*.py'))
 

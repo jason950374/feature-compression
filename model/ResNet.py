@@ -189,9 +189,10 @@ class ResNetCifar(nn.Module):
     """
     Module  of ResNet for Cifar dataset
     Always use BasicBlock
-    channels  of each stage16, 32, 64
-    :param depth: Depth of block
-    :param num_classes: Number of classes, Default: 10 for Cifar-10"""
+    channels  of each stage: 16, 32, 64
+    Args:
+        depth (int): Depth of block
+        num_classes (int): Number of classes, Default: 10 for Cifar-10"""
     def __init__(self, depth, num_classes=10):
         super(ResNetCifar, self).__init__()
         self.conv1 = conv3x3(3, 16)
@@ -228,3 +229,66 @@ class ResNetCifar(nn.Module):
     # TODO generalize
     def compress_replace(self, compress_new):
         self.stages.compress_replace(compress_new)
+
+
+class ResNetImageNet(nn.Module):
+    """
+        Module  of ResNet for ImageNet dataset
+        channels  of each stage: 64, 128, 256, 512
+        Args:
+            block (nn.Module): Type of block used
+            layers (list): List of blocks amount for each states
+            zero_init_residual (bool): Zero-initialize the last BN in each residual branch,
+                so that the residual branch starts with zeros, and each residual block behaves like an identity.
+                This improves the model by 0.2~0.3% according to https://arxiv.org/abs/1706.02677"""
+
+    def __init__(self, block, layers, zero_init_residual=False):
+        super(ResNetImageNet, self).__init__()
+        self.inplanes = 64
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3,
+                               bias=False)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.relu = nn.ReLU(inplace=True)
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        self.stages = ResNetStages(block, layers, 64)
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(512 * block.expansion, 1000)
+
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+
+        if zero_init_residual:
+            for m in self.modules():
+                if isinstance(m, Bottleneck):
+                    nn.init.constant_(m.bn3.weight, 0)
+                elif isinstance(m, BasicBlock):
+                    nn.init.constant_(m.bn2.weight, 0)
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
+
+        x, feature_maps, fm_transform = self.stages(x)  # TODO clean up
+
+        x = self.avgpool(x)
+        x = x.view(x.size(0), -1)
+        x = self.fc(x)
+
+        return x, feature_maps, fm_transform
+
+
+def resnet18(zero_init_residual=False):
+    """Constructs a ResNet-18 model.
+
+    Args:
+        zero_init_residual (bool): If True, returns a model pre-trained on ImageNet
+    """
+    model = ResNetImageNet(BasicBlock, [2, 2, 2, 2], zero_init_residual)
+
+    return model

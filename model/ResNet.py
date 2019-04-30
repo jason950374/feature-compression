@@ -14,14 +14,18 @@ def conv3x3(in_planes, out_planes, stride=1):
 
 
 class BasicBlock(nn.Module):
-    expansion = 1
     """
     BasicBlock module for ResNet
     conv -> bn -> relu -> conv -> bn
     residual connection is NOT included yet
-    :param inplanes: Input channel number
-    :param planes: Out channel number
-    :param stride: Stride of the convolution. Default: 1"""
+    
+    Args:
+        inplanes: Input channel number
+        planes: Out channel number
+        stride: Stride of the convolution. Default: 1
+    """
+    expansion = 1
+
     def __init__(self, inplanes, planes, stride=1):
         super(BasicBlock, self).__init__()
         self.conv1 = conv3x3(inplanes, planes, stride)
@@ -41,14 +45,18 @@ class BasicBlock(nn.Module):
 
 
 class Bottleneck(nn.Module):
-    expansion = 4
     """
     Bottleneck module for ResNet
     conv -> bn -> relu -> conv -> bn
     residual connection is NOT included yet
-    :param inplanes: input channel number
-    :param planes: out channel number
-    :param stride: Stride of the convolution. Default: 1"""
+
+    Args:
+        inplanes: input channel number
+        planes: out channel number
+        stride: Stride of the convolution. Default: 1
+    """
+    expansion = 4
+
     def __init__(self, inplanes, planes, stride=1):
         super(Bottleneck, self).__init__()
         self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1, bias=False)
@@ -76,10 +84,13 @@ class Bottleneck(nn.Module):
 
 class ResNetBlock(nn.Module):
     """
-            ResNet_block module for ResNet
-            add residual connection on given block
-            :param block: block module instance, BasicBlock or Bottleneck for instance
-            :param downsample: downsample module instance"""
+    ResNet_block module for ResNet
+    add residual connection on given block
+
+    Args:
+        block: block module instance, BasicBlock or Bottleneck for instance
+        downsample: downsample module instance
+    """
     def __init__(self, block, downsample=None):
         super(ResNetBlock, self).__init__()
         self.downsample = downsample
@@ -99,10 +110,12 @@ class ResNetBlock(nn.Module):
 class ResNetStages(nn.Module):
     """
     Module  of ResNet in mid stage
-    :param block: Block type for ResNet, a nn.Module class
-    :param ns: Number of blocks in each downsampling stages, a list or tuple
-    :param in_planes: Input channel number for first stage
-    :param compress: a module or function to compress feature map
+
+    Args:
+        block: Block type for ResNet, a nn.Module class
+        ns: Number of blocks in each downsampling stages, a list or tuple
+        in_planes: Input channel number for first stage
+        compress: a module or function to compress feature map
     """
     def __init__(self, block, ns, in_planes, compress=None):
         super(ResNetStages, self).__init__()

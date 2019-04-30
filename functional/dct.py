@@ -107,6 +107,7 @@ def dct_2d(x, norm=None):
     2-dimentional Discrete Cosine Transform, Type II (a.k.a. the DCT)
     For the meaning of the parameter `norm`, see:
     https://docs.scipy.org/doc/scipy-0.14.0/reference/generated/scipy.fftpack.dct.html
+
     :param x: the input signal
     :param norm: the normalization, None or 'ortho'
     :return: the DCT-II of the signal over the last 2 dimensions
@@ -213,6 +214,7 @@ class LinearDCT(nn.Linear):
     """Implement any DCT as a linear layer; in practice this executes around
     50x faster on GPU. Unfortunately, the DCT matrix is stored, which will
     increase memory usage.
+
     :param in_features: size of expected input
     :param type: which dct function in this file to use"""
     def __init__(self, in_features, type, norm=None, bias=False):
@@ -236,7 +238,9 @@ class LinearDCT(nn.Linear):
 
 
 def apply_linear_2d(x, linear_layer):
-    """Can be used with a LinearDCT layer to do a 2D DCT.
+    """
+    Can be used with a LinearDCT layer to do a 2D DCT.
+
     :param x: the input signal
     :param linear_layer: any PyTorch Linear layer
     :return: result of linear layer applied to last 2 dimensions
@@ -248,6 +252,7 @@ def apply_linear_2d(x, linear_layer):
 
 def apply_linear_3d(x, linear_layer):
     """Can be used with a LinearDCT layer to do a 3D DCT.
+
     :param x: the input signal
     :param linear_layer: any PyTorch Linear layer
     :return: result of linear layer applied to last 3 dimensions

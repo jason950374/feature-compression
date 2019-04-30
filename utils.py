@@ -9,21 +9,13 @@ import torchvision.datasets as datasets
 import torchvision.datasets as dset
 import matplotlib
 matplotlib.use('Agg')
+from matplotlib import pyplot as plt
 
 
-def create_exp_dir(path, scripts_to_save=None):
-    if not os.path.exists(path):
-        os.mkdir(path)
-    print('Experiment dir : {}'.format(path))
-
-    if scripts_to_save is not None:
-        os.mkdir(os.path.join(path, 'scripts'))
-        for script in scripts_to_save:
-            dst_file = os.path.join(path, 'scripts', os.path.basename(script))
-            shutil.copyfile(script, dst_file)
-
-
-class AverageMeter(object):
+class AverageMeter:
+    """
+    On-line Average Meter
+    """
 
     def __init__(self):
         self.avg = 0
@@ -37,6 +29,86 @@ class AverageMeter(object):
         self.sum += val * n
         self.cnt += n
         self.avg = self.sum / self.cnt
+
+
+class HistMeter:
+    eps = 10 ** -5
+
+    def __init__(self, codes=None):
+        self.hist = {}
+        # __init__ also used in reset. If codes=None, use old self.codes
+        if codes is not None:
+            self.codes = codes
+
+        try:
+            for code in self.codes:
+                self.hist[code] = 0
+        except AttributeError:
+            self.codes = None
+
+    def reset(self, codes=None):
+        self.__init__(codes)
+
+    def update(self, in_stream):
+        cnt = 0
+        if len(in_stream.size()) > 1:
+            in_stream = in_stream.view(-1)
+        size = in_stream.size(0)
+
+        for code in self.hist:
+            match = (in_stream <= (code + self.eps)) & (in_stream >= (code - self.eps))
+            cnt += match.sum()
+            self.hist[code] += match.sum()
+
+        assert cnt == size, \
+            "{}vs. {}: Some code in in_stream not find in self.hist".format(cnt, size)
+
+    def get_bit_cnt(self, code_length_dict):
+        r"""
+            Bit cnt for given histogram with dictionary of code length
+
+            Args:
+                    hist (dict):  Input histogram dictionary (code, cnt)
+                    code_length_dict (dict): code_length_dict, key(int) is code_length, value is iterable codes before
+                        encoding
+
+            Note:
+                    Different from bins of numpy.histogram, hist and code has same length.
+                    Normally, code_list[i] can be
+                    :math:`\frac{bins[i]+bins[i+1]}{2}`
+
+            Returns:
+                    Total length (bits)
+            """
+        total_len = 0
+
+        for code in self.hist:
+            total_len += self.hist[code] * code_length_dict[code]
+
+        return total_len
+
+    def plt_hist(self, plt_fn=None):
+        if plt_fn is None:
+            plt_fn = plt
+
+        codes = np.asarray(list(self.hist.keys()))
+        codes.sort()
+        hist = []
+        for code in codes:
+            hist.append(self.hist[code])
+        plt_fn.bar(codes, hist, width=1)
+
+
+def create_exp_dir(path, scripts_to_save=None):
+    if not os.path.exists(path):
+        os.mkdir(path)
+    print('Experiment dir : {}'.format(path))
+
+    if scripts_to_save is not None:
+        os.mkdir(os.path.join(path, 'scripts'))
+        for script in scripts_to_save:
+            dst_file = os.path.join(path, 'scripts', os.path.basename(script))
+            shutil.copyfile(script, dst_file)
 
 
 def get_loader(args):
@@ -304,41 +376,59 @@ def q_table_dct_gen(q_list=None):
     return q_table
 
 
-def gen_seg_dict(k, maximum):
+def gen_seg_dict(k, maximum, len_key=False):
     """
     Generate code length dictionary for unsigned sparse-exponential-Golomb
-    :param k: k for exponential-Golomb
-    :param maximum: Maximum for range
-    :return: code_length_dict for signed sparse-exponential-Golomb
+
+    Args:
+        k (int): k for exponential-Golomb
+        maximum (int): Maximum for range
+        len_key (bool): code for key or length for key
+
+    Return:
+        code_length_dict or length_code_dict for signed sparse-exponential-Golomb
     """
     assert k >= 0, "k must >= 0"
     assert maximum >= 0, "maximum must >= 0"
-    code_length_dict = {1: {0}}
+    length_code_dict = {1: {0}}
     if maximum != 0:
         pitch = 2 ** k
         integer_cur = pitch
         len_cur = k + 2
-        code_length_dict[len_cur] = set(range(1, pitch + 1))
+        length_code_dict[len_cur] = set(range(1, pitch + 1))
 
         while integer_cur < maximum:
             pitch *= 2
             len_cur += 2
-            code_length_dict[len_cur] = set(range(integer_cur + 1, integer_cur + pitch + 1))
+            length_code_dict[len_cur] = set(range(integer_cur + 1, integer_cur + pitch + 1))
             integer_cur += pitch
 
-    return code_length_dict
+    if len_key:
+        return length_code_dict
+    else:
+        code_length_dict = {}
+        for length in length_code_dict:
+            for code in length_code_dict[length]:
+                code_length_dict[code] = length
+
+        return code_length_dict
 
 
-def gen_signed_seg_dict(k, maximum):
-    """
+def gen_signed_seg_dict(k, maximum, len_key=False):
+    r"""
     Generate code length dictionary for signed version sparse-exponential-Golomb
-    :param k: k for exponential-Golomb
-    :param maximum: Maximum for range
-    :return: code_length_dict for signed sparse-exponential-Golomb
+
+    Args:
+        k (int): k for exponential-Golomb
+        maximum (int): Maximum for range
+        len_key (bool): code for key or length for key
+
+    Return:
+        code_length_dict or length_code_dict  for signed sparse-exponential-Golomb
     """
     assert k >= 0, "k must >= 0"
     maximum = 2 * abs(maximum)
-    code_length_dict = {1: {0}}
+    length_code_dict = {1: {0}}
     if maximum != 0:
         set_list = []
         pitch = 2 ** k
@@ -350,7 +440,7 @@ def gen_signed_seg_dict(k, maximum):
                 set_list.append((i + 1) // 2)
 
         len_cur = k + 2
-        code_length_dict[len_cur] = set(set_list)
+        length_code_dict[len_cur] = set(set_list)
 
         while integer_cur < maximum:
             set_list = []
@@ -363,23 +453,32 @@ def gen_signed_seg_dict(k, maximum):
                     set_list.append((i + 1) // 2)
 
             integer_cur += pitch
-            code_length_dict[len_cur] = set(set_list)
+            length_code_dict[len_cur] = set(set_list)
 
-    return code_length_dict
+    if len_key:
+        return length_code_dict
+    else:
+        code_length_dict = {}
+        for length in length_code_dict:
+            for code in length_code_dict[length]:
+                code_length_dict[code] = length
+        return code_length_dict
 
 
-def get_bit_cnt(in_stream, code_length_dict, conti=False, dual_conti=False):
+def stream2bit_cnt(in_stream, code_length_dict, conti=False, dual_conti=False):
     """
-    Bit cnt for given dictionary of code length
+    Bit cnt for given stream with dictionary of code length
+
     :param in_stream:  Input stream
     :param code_length_dict: code_length_dict, key(int) is code_length, value is iterable codes before encoding
     :param conti: The continuous sequence of number
     :param dual_conti: The sequence
-    :return : Total length (bits)
+    :return: Total length (bits)
     """
-    assert ((in_stream % 1) < 10 ** -5).max(), "in_stream need to be integers"
-    assert not (dual_conti and conti), "Only one or none of setting can be true"
     eps = 10 ** -5
+    assert ((in_stream % 1) < eps).max(), "in_stream need to be integers"
+    assert not (dual_conti and conti), "Only one or none of setting can be true"
+
     if len(in_stream.size()) > 1:
         in_stream = in_stream.view(-1)
 

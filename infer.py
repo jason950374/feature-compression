@@ -1,7 +1,7 @@
 import numpy as np
-import torch
-import torch.nn as nn
+import torch.cuda
 import glob
+import infer_result_handler
 import utils
 import argparse
 import logging
@@ -10,18 +10,18 @@ import os
 import time
 import random
 import torch.backends.cudnn as cudnn
+from model.ResNet import ResNetCifar, resnet18
+from model.compress import *
 import matplotlib
 matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-from model.ResNet import ResNetCifar
-from model.compress import *
-from torch.autograd import Variable
 
-parser = argparse.ArgumentParser("cifar")
+parser = argparse.ArgumentParser("infer")
 parser.add_argument('--dataset', type=str, default='cifar10', help='dataset')
 parser.add_argument('--batch_size', type=int, default=1024, help='batch size')
 parser.add_argument('--data', type=str, default='/home/jason/data/',
-                    help='location of the data corpus relative to home')
+                       help='location of the data corpus relative to home')
+# parser.add_argument('--data', type=str, default='/home/gasoon/datasets',
+#                     help='location of the data corpus relative to home')
 parser.add_argument('--workers', type=int, default=4, help='workers for data loader')
 parser.add_argument('--report_freq', type=float, default=100, help='report frequency')
 parser.add_argument('--gpu', type=int, default=0, help='gpu device id')
@@ -34,7 +34,8 @@ parser.add_argument('--k', type=int, default=0, help="k for exponential-Golomb")
 
 args = parser.parse_args()
 args.save = 'ckpts/test_{}_resnet{}_{}_k{}_{}'.format(args.dataset, args.depth,
-                                                  args.wavelet, args.k, time.strftime("%m%d_%H%M%S"))
+                                                   args.wavelet, args.k, time.strftime("%m%d_%H%M%S"))
+
 
 utils.create_exp_dir(args.save, scripts_to_save=glob.glob('*.py'))
 
@@ -57,24 +58,12 @@ elif args.dataset == 'cifar100':
     utils.multiply_adds = 2
 elif args.dataset == 'imageNet':
     args.num_classes = 1000
-    args.weight_decay = 1e-4
     args.workers = 64
     args.usage_weight = 1
     utils.multiply_adds = 1
 else:
     raise NotImplementedError(
         '{} dataset is not supported. Only support cifar10, cifar100 and imageNet.'.format(args.dataset))
-
-Q_table_dct = torch.tensor([
-    [1, 1, 1, 1, 1, 1, 1, 1],
-    [1, 1, 1, 1, 1, 1, 1, 1],
-    [1, 1, 1, 1, 1, 1, 1, 1],
-    [1, 1, 1, 1, 1, 1, 1, 1],
-    [1, 1, 1, 1, 1, 1, 1, 1],
-    [1, 1, 1, 1, 1, 1, 1, 1],
-    [1, 1, 1, 1, 1, 1, 1, 1],
-    [1, 1, 1, 1, 1, 1, 1, 1]
-], dtype=torch.get_default_dtype())
 
 # torch.set_default_dtype(torch.float64)
 
@@ -99,33 +88,45 @@ def main():
     train_queue, test_queue = utils.get_loader(args)
 
     # Build up the network
-    # model = nn.DataParallel(ResNetCifar().cuda())
-    model = ResNetCifar(args.depth, args.classes_num).cuda()
+    if args.dataset == 'cifar10':
+        # model = nn.DataParallel(ResNetCifar().cuda())
+        model = ResNetCifar(args.depth, args.classes_num).cuda()
+    elif args.dataset == 'imageNet':
+        # model = nn.DataParallel(resnet18().cuda())
+        model = resnet18().cuda()
+    else:
+        raise NotImplementedError(
+            '{} dataset is not supported. Only support cifar10, cifar100 and imageNet.'.format(args.dataset))
 
-    utils.load(model, args)
+    if args.dataset == 'imageNet':
+        net_dic = torch.load(args.load)
+        net_dic_fix = utils.imagenet_model_graph_mapping(net_dic, [2, 2, 2, 2])
+        model.load_state_dict(net_dic_fix)
+    else:
+        utils.load(model, args)
 
     # Insert compress_block after load since compress_block not include in training phase in this case
     # _, maximum_fm = utils.get_q_range(train_queue, model)
     maximum_fm = [5.2, 6.7, 5.3, 5.8, 6.7, 7.6, 4.6, 5.7, 36]  # quick test for this ckpts
+
     compress_list = compress_list_gen(args.depth, maximum_fm, args.wavelet)
 
     model.compress_replace(compress_list)
     logging.info("param size = %fMB", utils.count_parameters_in_MB(model))
 
-    acc_hd = utils.HandlerAcc()
-    fm_hd = utils.HandlerFm()
-    # tr_hd = utils.HandlerDCT_Fm()
-    tr_hd = utils.HandlerDWT_Fm()
-    # tr_hd = utils.HandlerQuanti()
+    code_length_dict = utils.gen_signed_seg_dict(args.k, 128)
+    u_code_length_dict = utils.gen_seg_dict(args.k, 256)
+    acc_hd = infer_result_handler.HandlerAcc(print_fn=logging.info)
+    fm_hd = infer_result_handler.HandlerFm(print_fn=logging.info)
+    # tr_hd = utils.HandlerDCT_Fm(print_fn=logging.info, save=args.save, code_length_dict=code_length_dict)
+    tr_hd = infer_result_handler.HandlerDWT_Fm(print_fn=logging.info, save=args.save, code_length_dict=code_length_dict)
+    # tr_hd = utils.HandlerQuanti(print_fn=logging.info, code_length_dict=u_code_length_dict)
+    handler_list = [fm_hd, tr_hd, acc_hd]
 
-    u_code_length_dict = utils.gen_signed_seg_dict(args.k, 128)
-    code_length_dict = utils.gen_seg_dict(args.k, 256)
-    # code_length_dict = {8: set(range(-128, 127))}
-    utils.infer_base(test_queue, model, [acc_hd, fm_hd, tr_hd])
-    fm_hd.print_result(print_fn=logging.info)
-    tr_hd.print_result(print_fn=logging.info, save=args.save, code_length_dict=u_code_length_dict)
-    # tr_hd.print_result(print_fn=logging.info, code_length_dict=code_length_dict)
-    acc_hd.print_result(print_fn=logging.info)
+    utils.infer_base(test_queue, model, handler_list)
+
+    for handler in handler_list:
+        handler.print_result()
 
 
 def compress_list_gen(depth, maximum_fm, wavelet='db1'):

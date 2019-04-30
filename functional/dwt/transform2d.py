@@ -9,15 +9,17 @@ class DWTForward(nn.Module):
     Performs a 2d DWT Forward decomposition of an image
 
     Args:
-        J (int): Number of levels of decomposition
-        wave (str, pywt.Wavelet, tuple, list) : Which wavelet to use. Can be a string to
+        J (int):
+            Number of levels of decomposition
+        wave (str, pywt.Wavelet, tuple, list) :
+            Which wavelet to use. Can be a string to
             pass to pywt.Wavelet constructor, can also be a pywt.Wavelet class,
             or can be a two tuple of array-like objects for the analysis low and
             high pass filters.
-        mode (str): 'zero', 'symmetric', 'reflect' or 'periodization'. The
-            padding scheme
-        separable (bool): whether to do the filtering separably or not (the
-            naive implementation can be faster on a gpu).
+        mode (str):
+            'zero', 'symmetric', 'reflect' or 'periodization'. The  padding scheme
+        separable (bool):
+            whether to do the filtering separably or not (the naive implementation can be faster on a gpu).
     """
     def __init__(self, J=1, wave='db1', mode='zero', separable=True):
         super().__init__()
@@ -130,10 +132,10 @@ class DWTInverse(nn.Module):
         """
         Args:
             coeffs (yl, yh): tuple of lowpass and bandpass coefficients, where:
-              yl is a lowpass tensor of shape :math:`(N, C_{in}, H_{in}',
-              W_{in}')` and yh is a list of bandpass tensors of shape
-              :math:`list(N, C_{in}, 3, H_{in}'', W_{in}'')`. I.e. should match
-              the format returned by DWTForward
+                yl is a lowpass tensor of shape :math:`(N, C_{in}, H_{in}',W_{in}')`
+                and yh is a list of bandpass tensors of shape
+                :math:`list(N, C_{in}, 3, H_{in}'', W_{in}'')`. I.e. should match
+                the format returned by DWTForward
 
         Returns:
             Reconstructed input of shape :math:`(N, C_{in}, H_{in}, W_{in})`

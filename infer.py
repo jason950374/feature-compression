@@ -18,10 +18,10 @@ matplotlib.use('Agg')
 parser = argparse.ArgumentParser("infer")
 parser.add_argument('--dataset', type=str, default='cifar10', help='dataset')
 parser.add_argument('--batch_size', type=int, default=1024, help='batch size')
-parser.add_argument('--data', type=str, default='/home/jason/data/',
-                       help='location of the data corpus relative to home')
-# parser.add_argument('--data', type=str, default='/home/gasoon/datasets',
-#                     help='location of the data corpus relative to home')
+# parser.add_argument('--data', type=str, default='/home/jason/data/',
+#                        help='location of the data corpus relative to home')
+parser.add_argument('--data', type=str, default='/home/gasoon/datasets',
+                     help='location of the data corpus relative to home')
 parser.add_argument('--workers', type=int, default=4, help='workers for data loader')
 parser.add_argument('--report_freq', type=float, default=100, help='report frequency')
 parser.add_argument('--gpu', type=int, default=0, help='gpu device id')
@@ -58,7 +58,6 @@ elif args.dataset == 'cifar100':
     utils.multiply_adds = 2
 elif args.dataset == 'imageNet':
     args.num_classes = 1000
-    args.workers = 64
     args.usage_weight = 1
     utils.multiply_adds = 1
 else:
@@ -106,9 +105,12 @@ def main():
         utils.load(model, args)
 
     # Insert compress_block after load since compress_block not include in training phase in this case
-    # _, maximum_fm = utils.get_q_range(train_queue, model)
-    maximum_fm = [5.2, 6.7, 5.3, 5.8, 6.7, 7.6, 4.6, 5.7, 36]  # quick test for this ckpts
-
+    hd_maximum_fm = infer_result_handler.HandlerFm(print_fn=logging.info, print_sparsity=False)
+    utils.infer_base(train_queue, model, [hd_maximum_fm])
+    hd_maximum_fm.print_result()
+    maximum_fm = hd_maximum_fm.maximums.copy()
+    # maximum_fm = [5.2, 6.7, 5.3, 5.8, 6.7, 7.6, 4.6, 5.7, 36]  # quick test for this ckpts
+'''
     compress_list = compress_list_gen(args.depth, maximum_fm, args.wavelet)
 
     model.compress_replace(compress_list)
@@ -127,7 +129,7 @@ def main():
 
     for handler in handler_list:
         handler.print_result()
-
+'''
 
 def compress_list_gen(depth, maximum_fm, wavelet='db1'):
     encoder_list = []

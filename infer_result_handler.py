@@ -47,12 +47,14 @@ class HandlerAcc(InferResultHandler):
 
 
 class HandlerFm(InferResultHandler):
-    def __init__(self, print_fn=None):
+    def __init__(self, print_fn=None, print_sparsity=True, print_range_all=False, print_range_layer=True):
         # State
         self.zero_cnt = 0
         self.size_flat = 0
         self.maximum = -2 ** 40
         self.minimum = 2 ** 40
+        self.maximums = []
+        self.minimums = []
 
         # IO
         if print_fn is not None:
@@ -60,24 +62,44 @@ class HandlerFm(InferResultHandler):
         else:
             self.print_fn = print
 
+        # config
+        self.print_sparsity = print_sparsity
+        self.print_range_all = print_range_all
+        self.print_range_layer = print_range_layer
+
     def update_batch(self, result, inputs=None):
         _, feature_maps_batch, _ = result
-        for feature_map_batch in feature_maps_batch:
+        for layer_num, feature_map_batch in enumerate(feature_maps_batch):
             self.zero_cnt += (feature_map_batch.cuda().abs() < 10 ** -10).sum().item()
             self.size_flat += feature_map_batch.view(-1).size(0)
-            self.maximum = max(self.maximum, feature_map_batch.cuda().max())
-            self.minimum = min(self.minimum, feature_map_batch.cuda().min().item())
+            layer_max = feature_map_batch.cuda().max().item()
+            layer_min = feature_map_batch.cuda().min().item()
+            self.maximum = max(self.maximum, layer_max)
+            self.minimum = min(self.minimum, layer_min)
+            if len(self.maximums) <= layer_num:
+                self.maximums.append(layer_max)
+                self.minimums.append(layer_min)
+            else:
+                self.maximums[layer_num] = max(self.maximums[layer_num], layer_max)
+                self.minimums[layer_num] = min(self.minimums[layer_num], layer_min)
 
     def print_result(self):
         self.print_fn("==============================================================")
-        self.print_fn("feature_maps == 0: {}".format(self.zero_cnt))
-        self.print_fn("feature_maps size: {}".format(self.size_flat))
-        self.print_fn("sparsity: {}".format(self.zero_cnt / self.size_flat))
-        self.print_fn("range ({}, {})".format(self.minimum, self.maximum))
+        if self.print_sparsity:
+            self.print_fn("feature_maps == 0: {}".format(self.zero_cnt))
+            self.print_fn("feature_maps size: {}".format(self.size_flat))
+            self.print_fn("sparsity: {}".format(self.zero_cnt / self.size_flat))
+        if self.print_range_all:
+            self.print_fn("range: ({}, {})".format(self.minimum, self.maximum))
+        if self.print_range_layer:
+            for layer_num, minimum, maximum in zip(range(len(self.maximums)), self.minimums, self.maximums):
+                self.print_fn("range in layer{}:  ({}, {})".format(layer_num, minimum, maximum))
         self.print_fn("==============================================================")
 
-    def set_config(self, *args):
-        pass
+    def set_config(self, print_sparsity=True, print_range_all=True, print_range_layer=False):
+        self.print_sparsity = print_sparsity
+        self.print_range_all = print_range_all
+        self.print_range_layer = print_range_layer
 
 
 class HandlerQuanti(InferResultHandler):

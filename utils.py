@@ -276,94 +276,6 @@ def getTime(seconds):
     return "{} days {} hours {} minutes {} seconds remaining.".format(day, hour, minit, seconds)
 
 
-def get_q_range(train_queue, model, do_print=True):
-    model.eval()
-
-    feature_maps = None
-    fm_transforms = None
-    with torch.no_grad():
-        for step, (x, target) in enumerate(train_queue):
-            x = Variable(x).cuda()
-
-            _, feature_maps_batch, fm_transforms_batch = model(x)
-
-            if feature_maps is not None:
-                feature_maps_org = feature_maps
-                feature_maps = []
-                for feature_map, feature_map_batch in zip(feature_maps_org, feature_maps_batch):
-                    feature_maps.append(torch.cat((feature_map, feature_map_batch)))
-            else:
-                feature_maps = feature_maps_batch
-
-            # concatenate mini-batch into whole data set
-            if len(fm_transforms_batch) != 0:
-                if fm_transforms is not None:
-                    fm_transforms_org = fm_transforms
-                    fm_transforms = []
-                    for fm_transform, fm_transform_batch in zip(fm_transforms_org, fm_transforms_batch):
-                        if type(fm_transform_batch) is tuple:
-                            XL = torch.cat((fm_transform[0], fm_transform_batch[0]))
-                            XH = []
-                            for XH_level, XH_level_batch in zip(fm_transform[1], fm_transform_batch[1]):
-                                XH.append(torch.cat((XH_level, XH_level_batch)))
-
-                            fm_transforms.append((XL, XH))
-                        else:
-                            fm_transforms.append(torch.cat((fm_transform, fm_transform_batch)))
-                else:
-                    fm_transforms = fm_transforms_batch
-
-        # Result of fm_transforms will not returned by this function
-        # So this section only need to be executed when do_print=True
-        if (fm_transforms is not None) and do_print:
-            maximum = []
-            minimum = []
-            for fm_transform in fm_transforms:
-                max_layer = -2 ** 40
-                min_layer = 2 ** 40
-                # DWT
-                if type(fm_transform) is tuple:
-                    XL, XH = fm_transform
-                    max_layer = max(max_layer, XL.cuda().max().item())
-                    min_layer = min(min_layer, XL.cuda().min().item())
-                    for xh in XH:
-                        max_layer = max(max_layer, xh.cuda().max().item())
-                        min_layer = min(min_layer, xh.cuda().min().item())
-                # DCT
-                else:
-                    max_layer = max(max_layer, fm_transform.cuda().max().item())
-                    min_layer = min(min_layer, fm_transform.cuda().min().item())
-
-                maximum.append(max_layer)
-                minimum.append(min_layer)
-
-            print("==============================================================")
-            for indx, min_layer, max_layer in zip(range(len(minimum)), minimum, maximum):
-                print("transform range {}: ({}, {})".format(indx, min_layer, max_layer))
-            print("==============================================================")
-
-        maximum_fm = []
-        minimum_fm = []
-        for feature_map in feature_maps:
-            max_layer = -2 ** 40
-            min_layer = 2 ** 40
-            max_cur = feature_map.cuda().max()
-            if max_layer < max_cur:
-                max_layer = max_cur
-            min_cur = feature_map.cuda().min()
-            if min_layer > min_cur:
-                min_layer = min_cur
-            maximum_fm.append(max_layer)
-            minimum_fm.append(min_layer)
-
-        if do_print:
-            for indx, min_layer, max_layer in zip(range(len(minimum_fm)), minimum_fm, maximum_fm):
-                print("range {}: ({}, {})".format(indx, min_layer, max_layer))
-            print("==============================================================")
-
-    return minimum_fm, maximum_fm
-
-
 def q_table_dct_gen(q_list=None):
     assert len(q_list) == 15, "q_list must be 15 values form low to high band"
     if type(q_list) is not torch.Tensor:
@@ -528,11 +440,11 @@ def stream2bit_cnt(in_stream, code_length_dict, conti=False, dual_conti=False):
     return total_len
 
 
-def infer_base(train_queue, model, handler_list=None):
+def infer_base(data_queue, model, handler_list=None):
     model.eval()
 
     with torch.no_grad():
-        for step, (x, target) in enumerate(train_queue):
+        for step, (x, target) in enumerate(data_queue):
             x = Variable(x).cuda()
             target = target.cuda()
 

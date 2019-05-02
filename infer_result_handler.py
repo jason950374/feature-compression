@@ -155,7 +155,7 @@ class HandlerQuanti(InferResultHandler):
 
 
 class HandlerDWT_Fm(InferResultHandler):
-    def __init__(self, print_fn=None, plt_fn=None, save="", code_length_dict=None):
+    def __init__(self, print_fn=None, save="", code_length_dict=None):
         self.states_updated = False
         self.zero_cnt = 0
         self.size_flat = 0
@@ -169,11 +169,6 @@ class HandlerDWT_Fm(InferResultHandler):
             self.print_fn = print_fn
         else:
             self.print_fn = print
-
-        if plt_fn is not None:
-            self.plt_fn = plt_fn
-        else:
-            self.plt_fn = plt
 
         self.save = save
 
@@ -214,21 +209,25 @@ class HandlerDWT_Fm(InferResultHandler):
         if not self.states_updated:
             assert self.hist_meters is not None, "Please update before print"
             self.code_len = 0
+            figure = plt.figure()
+            ax = figure.add_subplot(1, 1, 1)
+
             for layer_num, hist_layer in enumerate(self.hist_meters):
                 xl_hist, xh_hists = hist_layer
-                xl_hist.plt_hist(plt_fn=self.plt_fn)
-                self.plt_fn.savefig('{}/Layer{}_XL.png'.format(self.save, layer_num))
-                self.plt_fn.clf()
+                xl_hist.plt_hist(plt_fn=ax)
+                figure.savefig('{}/Layer{}_XL.png'.format(self.save, layer_num))
+                ax.cla()
 
                 if self.code_length_dict is not None:
                     self.code_len += xl_hist.get_bit_cnt(self.code_length_dict)
 
                 for i, xh_hist in enumerate(xh_hists):
-                    xh_hist.plt_hist(plt_fn=self.plt_fn)
-                    self.plt_fn.savefig('{}/Layer{}_XH_{}.png'.format(self.save, layer_num, i))
-                    self.plt_fn.clf()
+                    xh_hist.plt_hist(plt_fn=ax)
+                    figure.savefig('{}/Layer{}_XH_{}.png'.format(self.save, layer_num, i))
+                    ax.cla()
                     if self.code_length_dict is not None:
                         self.code_len += xh_hist.get_bit_cnt(self.code_length_dict)
+            plt.close(figure)
 
             self.states_updated = True
 
@@ -248,7 +247,7 @@ class HandlerDWT_Fm(InferResultHandler):
 
 
 class HandlerDCT_Fm(InferResultHandler):
-    def __init__(self, print_fn=None, plt_fn=None, save="", code_length_dict=None):
+    def __init__(self, print_fn=None, save="", code_length_dict=None):
         # states
         self.states_updated = True
         self.zero_cnt = 0
@@ -263,11 +262,6 @@ class HandlerDCT_Fm(InferResultHandler):
             self.print_fn = print_fn
         else:
             self.print_fn = print
-
-        if plt_fn is not None:
-            self.plt_fn = plt_fn
-        else:
-            self.plt_fn = plt
 
         self.save = save
 
@@ -289,17 +283,23 @@ class HandlerDCT_Fm(InferResultHandler):
             self.minimum = min(self.minimum, min_cur)
 
             if len(self.hist_meters) <= layer_num:
-                self.hist_meters.append((HistMeter(self.code_length_dict), []))
+                self.hist_meters.append(HistMeter(self.code_length_dict))
 
-            self.hist_meters[layer_num][0].update(fm_transform_batch)
+            self.hist_meters[layer_num].update(fm_transform_batch.cuda())
 
     def print_result(self):
         if not self.states_updated:
             self.code_len = 0
+            figure = plt.figure()
+            ax = figure.add_subplot(1, 1, 1)
+
             for layer_num, hist_layer in enumerate(self.hist_meters):
-                hist_layer.plt_hist(plt_fn=self.plt_fn)
-                self.plt_fn.savefig('{}/Layer{}_DCT.png'.format(self.save, layer_num))
-                self.plt_fn.clf()
+                hist_layer.plt_hist(plt_fn=ax)
+                figure.savefig('{}/Layer{}_DCT.png'.format(self.save, layer_num))
+                ax.cla()
+                self.code_len += hist_layer.get_bit_cnt(self.code_length_dict)
+
+            plt.close(figure)
 
         self.print_fn("==============================================================")
         self.print_fn("fm_transforms == 0: {}".format(self.zero_cnt))

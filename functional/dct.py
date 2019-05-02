@@ -10,8 +10,12 @@ Part of code credit for https://github.com/zh217/torch-dct.git
 def dct1(x):
     """
     Discrete Cosine Transform, Type I
-    :param x: the input signal
-    :return: the DCT-I of the signal over the last dimension
+
+    Args:
+        x: the input signal
+
+    Return:
+        the DCT-I of the signal over the last dimension
     """
     x_shape = x.shape
     x = x.view(-1, x_shape[-1])
@@ -23,8 +27,12 @@ def idct1(X):
     """
     The inverse of DCT-I, which is just a scaled DCT-I
     Our definition if idct1 is such that idct1(dct1(x)) == x
-    :param X: the input signal
-    :return: the inverse DCT-I of the signal over the last dimension
+
+    Args:
+        X: the input signal
+
+    Return:
+        the inverse DCT-I of the signal over the last dimension
     """
     n = X.shape[-1]
     return dct1(X) / (2 * (n - 1))
@@ -33,11 +41,16 @@ def idct1(X):
 def dct(x, norm=None):
     """
     Discrete Cosine Transform, Type II (a.k.a. the DCT)
+
     For the meaning of the parameter `norm`, see:
     https://docs.scipy.org/doc/scipy-0.14.0/reference/generated/scipy.fftpack.dct.html
-    :param x: the input signal
-    :param norm: the normalization, None or 'ortho'
-    :return: the DCT-II of the signal over the last dimension
+
+    Args:
+        x: the input signal
+    norm: the normalization, None or 'ortho'
+
+    Return:
+        the DCT-II of the signal over the last dimension
     """
     x_shape = x.shape
     N = x_shape[-1]
@@ -66,11 +79,16 @@ def idct(X, norm=None):
     """
     The inverse to DCT-II, which is a scaled Discrete Cosine Transform, Type III
     Our definition of idct is that idct(dct(x)) == x
+
     For the meaning of the parameter `norm`, see:
     https://docs.scipy.org/doc/scipy-0.14.0/reference/generated/scipy.fftpack.dct.html
-    :param X: the input signal
-    :param norm: the normalization, None or 'ortho'
-    :return: the inverse DCT-II of the signal over the last dimension
+
+    Args:
+        X: the input signal
+        norm: the normalization, None or 'ortho'
+
+    Return:
+        the inverse DCT-II of the signal over the last dimension
     """
 
     x_shape = X.shape
@@ -105,12 +123,16 @@ def idct(X, norm=None):
 def dct_2d(x, norm=None):
     """
     2-dimentional Discrete Cosine Transform, Type II (a.k.a. the DCT)
+
     For the meaning of the parameter `norm`, see:
     https://docs.scipy.org/doc/scipy-0.14.0/reference/generated/scipy.fftpack.dct.html
 
-    :param x: the input signal
-    :param norm: the normalization, None or 'ortho'
-    :return: the DCT-II of the signal over the last 2 dimensions
+    Args:
+        x: the input signal
+        norm: the normalization, None or 'ortho'
+
+    Return:
+         the DCT-II of the signal over the last 2 dimensions
     """
     X1 = dct(x, norm=norm)
     X2 = dct(X1.transpose(-1, -2), norm=norm)
@@ -121,11 +143,16 @@ def idct_2d(X, norm=None):
     """
     The inverse to 2D DCT-II, which is a scaled Discrete Cosine Transform, Type III
     Our definition of idct is that idct_2d(dct_2d(x)) == x
+
     For the meaning of the parameter `norm`, see:
     https://docs.scipy.org/doc/scipy-0.14.0/reference/generated/scipy.fftpack.dct.html
-    :param X: the input signal
-    :param norm: the normalization, None or 'ortho'
-    :return: the DCT-II of the signal over the last 2 dimensions
+
+    Args:
+        X: the input signal
+        norm: the normalization, None or 'ortho'
+
+    Return:
+        the DCT-II of the signal over the last 2 dimensions
     """
     x1 = idct(X, norm=norm)
     x2 = idct(x1.transpose(-1, -2), norm=norm)
@@ -135,11 +162,16 @@ def idct_2d(X, norm=None):
 def dct_3d(x, norm=None):
     """
     3-dimentional Discrete Cosine Transform, Type II (a.k.a. the DCT)
+
     For the meaning of the parameter `norm`, see:
     https://docs.scipy.org/doc/scipy-0.14.0/reference/generated/scipy.fftpack.dct.html
-    :param x: the input signal
-    :param norm: the normalization, None or 'ortho'
-    :return: the DCT-II of the signal over the last 3 dimensions
+
+    Args:
+        x: the input signal
+        norm: the normalization, None or 'ortho'
+
+    Return:
+        the DCT-II of the signal over the last 3 dimensions
     """
     X1 = dct(x, norm=norm)
     X2 = dct(X1.transpose(-1, -2), norm=norm)
@@ -151,11 +183,16 @@ def idct_3d(X, norm=None):
     """
     The inverse to 3D DCT-II, which is a scaled Discrete Cosine Transform, Type III
     Our definition of idct is that idct_3d(dct_3d(x)) == x
+
     For the meaning of the parameter `norm`, see:
     https://docs.scipy.org/doc/scipy-0.14.0/reference/generated/scipy.fftpack.dct.html
-    :param X: the input signal
-    :param norm: the normalization, None or 'ortho'
-    :return: the DCT-II of the signal over the last 3 dimensions
+
+    Args:
+        X: the input signal
+        norm: the normalization, None or 'ortho'
+
+    Return:
+        the DCT-II of the signal over the last 3 dimensions
     """
     x1 = idct(X, norm=norm)
     x2 = idct(x1.transpose(-1, -2), norm=norm)
@@ -166,12 +203,17 @@ def idct_3d(X, norm=None):
 def dct_nd(x, dim, norm=None):
     """
         n-dimentional Discrete Cosine Transform, Type II (a.k.a. the DCT)
+
         For the meaning of the parameter `norm`, see:
         https://docs.scipy.org/doc/scipy-0.14.0/reference/generated/scipy.fftpack.dct.html
-        :param x: the input signal
-        :param dim: signal dimension
-        :param norm: the normalization, None or 'ortho'
-        :return: the DCT-II of the signal over the last n dimensions
+
+        Args:
+            x: the input signal
+            dim: signal dimension
+            norm: the normalization, None or 'ortho'
+
+        Return:
+            the DCT-II of the signal over the last n dimensions
         """
     assert dim % 1 == 0, "dim need to be integer"
     return _dct_nd(x, dim, dim_cur=1, norm=norm)
@@ -190,12 +232,17 @@ def idct_nd(X, dim, norm=None):
     """
     The inverse to 3D DCT-II, which is a scaled Discrete Cosine Transform, Type III
     Our definition of idct is that idct_3d(dct_3d(x)) == x
+
     For the meaning of the parameter `norm`, see:
     https://docs.scipy.org/doc/scipy-0.14.0/reference/generated/scipy.fftpack.dct.html
-    :param X: the input signal
-    :param dim: signal dimension
-    :param norm: the normalization, None or 'ortho'
-    :return: the DCT-II of the signal over the last 3 dimensions
+
+    Args:
+        X: the input signal
+        dim: signal dimension
+        norm: the normalization, None or 'ortho'
+
+    Return:
+        the DCT-II of the signal over the last 3 dimensions
     """
     assert dim % 1 == 0, "dim need to be integer"
     return _idct_nd(X, dim, dim_cur=1, norm=norm)
@@ -215,8 +262,9 @@ class LinearDCT(nn.Linear):
     50x faster on GPU. Unfortunately, the DCT matrix is stored, which will
     increase memory usage.
 
-    :param in_features: size of expected input
-    :param type: which dct function in this file to use"""
+    Args:
+        in_features: size of expected input
+        type: which dct function in this file to use"""
     def __init__(self, in_features, type, norm=None, bias=False):
         self.type = type
         self.N = in_features

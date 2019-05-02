@@ -172,7 +172,8 @@ class ResNetStages(nn.Module):
         """
         If replace compress method, beware initialization of parameters in new compress method.
         A compress method must be pair of encoder and decoder
-        :param compress_new:  compress_new can be a tuple of encoder-decoder pair, or tuple of
+        Args:
+             compress_new:  compress_new can be a tuple of encoder-decoder pair, or tuple of
             encoder list and decoder list
         """
         self.compress = copy.deepcopy(compress_new)
@@ -248,6 +249,7 @@ class ResNetImageNet(nn.Module):
     """
         Module  of ResNet for ImageNet dataset
         channels  of each stage: 64, 128, 256, 512
+
         Args:
             block (nn.Module): Type of block used
             layers (list): List of blocks amount for each states

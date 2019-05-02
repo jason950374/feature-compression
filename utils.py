@@ -33,7 +33,7 @@ class AverageMeter:
 
 
 class HistMeter:
-    eps = 10 ** -5
+    eps = 10 ** -4
 
     def __init__(self, codes=None):
         self.hist = {}
@@ -96,8 +96,8 @@ class HistMeter:
 
         codes = np.asarray(list(self.hist.keys()))
         codes.sort()
-        xmin = 2 ** 40
-        xmax = -2 ** 40
+        xmin = codes[0]
+        xmax = codes[-1]
 
         hist = []
         if tight:
@@ -112,6 +112,8 @@ class HistMeter:
                     xmax = code
                 else:
                     break
+
+            assert xmax > xmin, "Nothing??"
 
             for code in range(xmin, xmax + 1):
                 hist.append(self.hist[code])

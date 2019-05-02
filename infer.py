@@ -19,9 +19,9 @@ parser = argparse.ArgumentParser("infer")
 parser.add_argument('--dataset', type=str, default='cifar10', help='dataset')
 parser.add_argument('--batch_size', type=int, default=1024, help='batch size')
 # parser.add_argument('--data', type=str, default='/home/jason/data/',
-#                        help='location of the data corpus relative to home')
+#                       help='location of the data corpus relative to home')
 parser.add_argument('--data', type=str, default='/home/gasoon/datasets',
-                     help='location of the data corpus relative to home')
+                    help='location of the data corpus relative to home')
 parser.add_argument('--workers', type=int, default=4, help='workers for data loader')
 parser.add_argument('--report_freq', type=float, default=100, help='report frequency')
 parser.add_argument('--gpu', type=int, default=0, help='gpu device id')
@@ -92,7 +92,11 @@ def main():
         model = ResNetCifar(args.depth, args.classes_num).cuda()
     elif args.dataset == 'imageNet':
         # model = nn.DataParallel(resnet18().cuda())
-        model = resnet18().cuda()
+        if args.depth == 18:
+            model = resnet18().cuda()
+        else:
+            raise NotImplementedError(
+                'Depth:{} is not supported.'.format(args.depth))
     else:
         raise NotImplementedError(
             '{} dataset is not supported. Only support cifar10, cifar100 and imageNet.'.format(args.dataset))
@@ -105,13 +109,17 @@ def main():
         utils.load(model, args)
 
     # Insert compress_block after load since compress_block not include in training phase in this case
-    hd_maximum_fm = infer_result_handler.HandlerFm(print_fn=logging.info, print_sparsity=False)
-    utils.infer_base(train_queue, model, [hd_maximum_fm])
-    hd_maximum_fm.print_result()
-    maximum_fm = hd_maximum_fm.maximums.copy()
-    # maximum_fm = [5.2, 6.7, 5.3, 5.8, 6.7, 7.6, 4.6, 5.7, 36]  # quick test for this ckpts
-'''
-    compress_list = compress_list_gen(args.depth, maximum_fm, args.wavelet)
+    # hd_maximum_fm = infer_result_handler.HandlerFm(print_fn=logging.info, print_sparsity=False)
+    # utils.infer_base(train_queue, model, [hd_maximum_fm])
+    # hd_maximum_fm.print_result()
+    # maximum_fm = hd_maximum_fm.maximums.copy()
+
+    # quick test for this ckpts: cifar10_resnet20_0409_184724
+    # maximum_fm = [5.2, 6.7, 5.3, 5.8, 6.7, 7.6, 4.6, 5.7, 36]
+    # quick test for pretrain resnet18
+    maximum_fm = [11, 15.5, 14, 11.5, 8.5, 14, 11.5, 101]  # quick test for this ckpts
+
+    compress_list = compress_list_gen(maximum_fm, args.wavelet)
 
     model.compress_replace(compress_list)
     logging.info("param size = %fMB", utils.count_parameters_in_MB(model))
@@ -129,12 +137,18 @@ def main():
 
     for handler in handler_list:
         handler.print_result()
-'''
 
-def compress_list_gen(depth, maximum_fm, wavelet='db1'):
+    for k in range(1, 3):
+        logging.info("===========   {}   ===========".format(k))
+        code_length_dict = utils.gen_signed_seg_dict(k, 128)
+        tr_hd.set_config(code_length_dict)
+        tr_hd.print_result()
+
+
+def compress_list_gen(maximum_fm, wavelet='db1'):
     encoder_list = []
     decoder_list = []
-    for i in range(((depth - 2) // 2) - 1):
+    for i in range(len(maximum_fm) - 1):
         q_factor = maximum_fm[i] / 255
 
         q_table_dwt = torch.tensor([0.1, 0.1, 0.1, 0.1], dtype=torch.get_default_dtype())
@@ -186,3 +200,4 @@ def compress_list_gen(depth, maximum_fm, wavelet='db1'):
 
 if __name__ == '__main__':
     main()
+

@@ -40,7 +40,7 @@ class HandlerAcc(InferResultHandler):
         self.top5.update(prec5.item(), n)
 
     def print_result(self):
-        self.print_fn('[Test] acc %.2f%%;', self.top1.avg)
+        self.print_fn('[Test] acc %.2f%%;, Top5 acc %.2f%%', self.top1.avg, self.top5.avg)
 
     def set_config(self, *args):
         pass
@@ -143,8 +143,8 @@ class HandlerQuanti(InferResultHandler):
         self.print_fn("sparsity: {}".format(self.zero_cnt / self.size_flat))
         self.print_fn("range ({}, {})".format(self.minimum, self.maximum))
         self.print_fn("code length {}".format(self.code_len))
-        self.print_fn("Compress rate {}/{}= {}".format(self.size_flat * 8, self.code_len,
-                                                       self.size_flat * 8 / self.code_len))
+        self.print_fn("Compress rate {}/{} = {}".format(self.size_flat * 8, self.code_len,
+                                                        self.size_flat * 8 / self.code_len))
         self.print_fn("==============================================================")
 
     def set_config(self, code_length_dict=None):
@@ -247,16 +247,16 @@ class HandlerDWT_Fm(InferResultHandler):
         self.code_length_dict = code_length_dict
 
 
-# TODO fix memory eater
 class HandlerDCT_Fm(InferResultHandler):
     def __init__(self, print_fn=None, plt_fn=None, save="", code_length_dict=None):
-        self.fm_transforms = None
+        # states
         self.states_updated = True
         self.zero_cnt = 0
         self.size_flat = 0
         self.maximum = -2 ** 40
         self.minimum = 2 ** 40
         self.code_len = 0
+        self.hist_meters = []
 
         # IO
         if print_fn is not None:
@@ -278,52 +278,37 @@ class HandlerDCT_Fm(InferResultHandler):
         _, _, fm_transforms_batch = result
         assert len(fm_transforms_batch) != 0, "Nothing in fm_transforms_batch!!!"
         self.states_updated = False
-        if self.fm_transforms is not None:
-            fm_transforms = []
-            for fm_transform, fm_transform_batch in zip(self.fm_transforms, fm_transforms_batch):
-                if type(fm_transform_batch) is tuple:
-                    XL = torch.cat((fm_transform[0], fm_transform_batch[0]))
-                    XH = []
-                    for XH_level, XH_level_batch in zip(fm_transform[1], fm_transform_batch[1]):
-                        XH.append(torch.cat((XH_level, XH_level_batch)))
+        for layer_num, fm_transform_batch in enumerate(fm_transforms_batch):
+            self.zero_cnt += (fm_transform_batch.cuda().abs() < 10 ** -10).sum().item()
+            self.size_flat += fm_transform_batch.view(-1).size(0)
 
-                    fm_transforms.append((XL, XH))
-                else:
-                    fm_transforms.append(torch.cat((fm_transform, fm_transform_batch)))
-        else:
-            fm_transforms = fm_transforms_batch
+            max_cur = fm_transform_batch.cuda().max()
+            min_cur = fm_transform_batch.cuda().min()
 
-        self.fm_transforms = fm_transforms
+            self.maximum = max(self.maximum, max_cur)
+            self.minimum = min(self.minimum, min_cur)
+
+            if len(self.hist_meters) <= layer_num:
+                self.hist_meters.append((HistMeter(self.code_length_dict), []))
+
+            self.hist_meters[layer_num][0].update(fm_transform_batch)
 
     def print_result(self):
-        assert self.fm_transforms is not None, "Please update before print"
-
         if not self.states_updated:
             self.code_len = 0
-            for layer_num, fm_transform in enumerate(self.fm_transforms):
-                self.zero_cnt += (fm_transform.cuda().abs() < 10 ** -10).sum().item()
-                self.size_flat += fm_transform.view(-1).size(0)
-                if self.code_length_dict is not None:
-                    self.code_len += stream2bit_cnt(fm_transform.cuda(), self.code_length_dict)
-                self.plt_fn.hist(fm_transform.view(-1), bins=255)
+            for layer_num, hist_layer in enumerate(self.hist_meters):
+                hist_layer.plt_hist(plt_fn=self.plt_fn)
                 self.plt_fn.savefig('{}/Layer{}_DCT.png'.format(self.save, layer_num))
                 self.plt_fn.clf()
-                max_cur = fm_transform.cuda().max()
-                if self.maximum < max_cur:
-                    self.maximum = max_cur
-                min_cur = fm_transform.cuda().min()
-                if self.minimum > min_cur:
-                    self.minimum = min_cur
 
         self.print_fn("==============================================================")
         self.print_fn("fm_transforms == 0: {}".format(self.zero_cnt))
         self.print_fn("fm_transforms size: {}".format(self.size_flat))
         self.print_fn("transform sparsity: {}".format(self.zero_cnt / self.size_flat))
         self.print_fn("transform range ({}, {})".format(self.minimum, self.maximum))
-        if self.code_length_dict is not None:
-            self.print_fn("code length {}".format(self.code_len))
-            self.print_fn("Compress rate {}/{}= {}".format(self.size_flat * 8, self.code_len,
-                                                           self.size_flat * 8 / self.code_len))
+        self.print_fn("code length {}".format(self.code_len))
+        self.print_fn("Compress rate {}/{} = {}".format(self.size_flat * 8, self.code_len,
+                                                        self.size_flat * 8 / self.code_len))
         self.print_fn("==============================================================")
 
     def set_config(self, code_length_dict=None):

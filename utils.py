@@ -1,4 +1,5 @@
 import os
+import time
 import numpy as np
 import torch
 import torch.utils.data
@@ -50,6 +51,8 @@ class HistMeter:
         self.__init__(codes)
 
     def update(self, in_stream):
+        assert ((in_stream % 1) < self.eps).max(), \
+            "in_stream need to be integers {}".format(((in_stream % 1) < self.eps).max())
         cnt = 0
         if len(in_stream.size()) > 1:
             in_stream = in_stream.view(-1)
@@ -57,11 +60,11 @@ class HistMeter:
 
         for code in self.hist:
             match = (in_stream <= (code + self.eps)) & (in_stream >= (code - self.eps))
-            cnt += match.sum()
+            cnt += int(match.sum().item())
             self.hist[code] += match.sum()
 
         assert cnt == size, \
-            "{}vs. {}: Some code in in_stream not find in self.hist".format(cnt, size)
+            "{} vs. {}: Some code in in_stream not find in self.hist".format(cnt, size)
 
     def get_bit_cnt(self, code_length_dict):
         r"""
@@ -87,16 +90,39 @@ class HistMeter:
 
         return total_len
 
-    def plt_hist(self, plt_fn=None):
+    def plt_hist(self, plt_fn=None, tight=True):
         if plt_fn is None:
             plt_fn = plt
 
         codes = np.asarray(list(self.hist.keys()))
         codes.sort()
+        xmin = 2 ** 40
+        xmax = -2 ** 40
+
         hist = []
-        for code in codes:
-            hist.append(self.hist[code])
-        plt_fn.bar(codes, hist, width=1)
+        if tight:
+            for code in codes:
+                if self.hist[code] == 0:
+                    xmin = code
+                else:
+                    break
+
+            for code in reversed(codes):
+                if self.hist[code] == 0:
+                    xmax = code
+                else:
+                    break
+
+            for code in range(xmin, xmax + 1):
+                hist.append(self.hist[code])
+
+            plt_fn.bar(range(xmin, xmax + 1), hist, width=1)
+
+        else:
+            for code in codes:
+                hist.append(self.hist[code])
+
+            plt_fn.bar(codes, hist, width=1)
 
 
 def create_exp_dir(path, scripts_to_save=None):
@@ -373,7 +399,8 @@ def gen_signed_seg_dict(k, maximum, len_key=False):
         code_length_dict = {}
         for length in length_code_dict:
             for code in length_code_dict[length]:
-                code_length_dict[code] = length
+                if code in range(-maximum // 2, maximum // 2):
+                    code_length_dict[code] = length
         return code_length_dict
 
 
@@ -442,9 +469,16 @@ def stream2bit_cnt(in_stream, code_length_dict, conti=False, dual_conti=False):
 
 def infer_base(data_queue, model, handler_list=None):
     model.eval()
+    end = time.time()
+    total_step = len(data_queue)
+    data_time = AverageMeter()
+    batch_time = AverageMeter()
 
     with torch.no_grad():
         for step, (x, target) in enumerate(data_queue):
+            time.time()
+            data_time.update(time.time() - end)
+
             x = Variable(x).cuda()
             target = target.cuda()
 
@@ -452,6 +486,13 @@ def infer_base(data_queue, model, handler_list=None):
 
             for handler in handler_list:
                 handler.update_batch(result, (x, target))
+
+            batch_time.update(time.time() - end)
+            end = time.time()
+
+            time_remain = getTime((total_step - step) * batch_time.avg)
+            print('Time: {:.4f} Data: {:.4f} Time remaining: {}'.format(
+                batch_time.avg, data_time.avg, time_remain))
 
 
 def imagenet_model_graph_mapping(pretrain_dic, ns):

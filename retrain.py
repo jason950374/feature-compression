@@ -35,7 +35,7 @@ parser.add_argument('--wavelet', type=str, default="db1", help='Mother wavelet f
 parser.add_argument('--k', type=int, default=0, help="k for exponential-Golomb")
 
 args = parser.parse_args()
-args.save = 'ckpts/retrain_rand_{}'.format(args.load[6:-9])
+args.save = 'ckpts/retrain_{}_{}'.format(args.wavelet, args.load[6:-9])
 args.learning_rate = args.learning_rate * args.batch_size / 256
 
 
@@ -128,7 +128,7 @@ def main():
     scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=milestones)
 
     for epoch in range(0, args.epochs):
-        # scheduler.step()
+        scheduler.step()
         logging.info('[Train] Epoch = %d , LR = %e', epoch, scheduler.get_lr()[0])
         is_best = False
         train(train_queue, model, criterion, optimizer, epoch, args,)

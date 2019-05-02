@@ -295,6 +295,10 @@ class ResNetImageNet(nn.Module):
 
         return x, feature_maps, fm_transform
 
+    # TODO generalize
+    def compress_replace(self, compress_new):
+        self.stages.compress_replace(compress_new)
+
 
 def resnet18(zero_init_residual=False):
     """Constructs a ResNet-18 model.

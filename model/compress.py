@@ -67,19 +67,19 @@ class CompressDCT(EncoderDecoderPair):
 
                 if r_w != 0:
                     X = my_f.dct_2d(x[..., 8*i_h:8*(i_h+1), -r_w:])
-                    X = torch.round((X / q_table[..., -r_w:]))
+                    X = torch.round((X / q_table[..., :r_w]))
                     X = X.clamp(-2 ** (self.bit - 1), 2 ** (self.bit-1) - 1)
                     fm_transform[..., 8 * i_h:8 * (i_h + 1), -r_w:] = X
 
             if r_h != 0:
                 for i_w in range(W // 8):
                     X = my_f.dct_2d(x[..., -r_h:, 8 * i_w:8 * (i_w + 1)])
-                    X = torch.round((X / q_table[..., -r_h:, :]))
+                    X = torch.round((X / q_table[..., :r_h, :]))
                     X = X.clamp(-2 ** (self.bit - 1), 2 ** (self.bit-1) - 1)
                     fm_transform[..., -r_h:, 8 * i_w:8 * (i_w + 1)] = X
                 if r_w != 0:
                     X = my_f.dct_2d(x[..., -r_h:, -r_w:])
-                    X = torch.round((X / q_table[..., -r_h:, -r_w:]))
+                    X = torch.round((X / q_table[..., :r_h, :r_w]))
                     X = X.clamp(-2 ** (self.bit - 1), 2 ** (self.bit-1) - 1)
                     fm_transform[..., -r_h:, -r_w:] = X
             return fm_transform

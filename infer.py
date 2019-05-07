@@ -19,7 +19,7 @@ parser = argparse.ArgumentParser("infer")
 parser.add_argument('--dataset', type=str, default='cifar10', help='dataset')
 parser.add_argument('--batch_size', type=int, default=1024, help='batch size')
 # parser.add_argument('--data', type=str, default='/home/jason/data/',
-#                       help='location of the data corpus relative to home')
+#                     help='location of the data corpus relative to home')
 parser.add_argument('--data', type=str, default='/home/gasoon/datasets',
                     help='location of the data corpus relative to home')
 parser.add_argument('--workers', type=int, default=4, help='workers for data loader')
@@ -30,11 +30,11 @@ parser.add_argument('--depth', type=int, default=20, help='Depth of base resnet 
 parser.add_argument('--num_classes', type=int, default=10, help='Number of classes of now dataset.')
 parser.add_argument('--load', type=str, default="")
 parser.add_argument('--wavelet', type=str, default="db1", help='Mother wavelet for DWT')
-parser.add_argument('--k', type=int, default=0, help="k for exponential-Golomb")
+parser.add_argument('--k', type=int, default=1, help="k for exponential-Golomb")
 
 args = parser.parse_args()
-args.save = 'ckpts/test_{}_DCT_resnet{}_k{}_{}'.format(args.dataset, args.depth,
-                                                       args.k, time.strftime("%m%d_%H%M%S"))
+args.save = 'ckpts/test_{}_resnet{}_DCT_k{}_{}'.format(args.dataset, args.depth,
+                                                   args.k, time.strftime("%m%d_%H%M%S"))
 
 
 utils.create_exp_dir(args.save, scripts_to_save=glob.glob('*.py'))
@@ -117,7 +117,7 @@ def main():
     # quick test for this ckpts: cifar10_resnet20_0409_184724
     # maximum_fm = [5.2, 6.7, 5.3, 5.8, 6.7, 7.6, 4.6, 5.7, 36]
     # quick test for pretrain resnet18
-    maximum_fm = [11, 15.5, 14, 11.5, 8.5, 14, 11.5, 101]  # quick test for this ckpts
+    maximum_fm = [11, 15.5, 14, 11.5, 8.5, 14, 11.5, 101]
 
     compress_list = compress_list_gen(maximum_fm, args.wavelet)
 
@@ -141,60 +141,47 @@ def main():
     for k in range(1, 5):
         logging.info("===========   {}   ===========".format(k))
         code_length_dict = utils.gen_signed_seg_dict(k, 128)
+        # u_code_length_dict = utils.gen_seg_dict(k, 256)
         tr_hd.set_config(code_length_dict)
         tr_hd.print_result()
 
 
 def compress_list_gen(maximum_fm, wavelet='db1'):
-    encoder_list = []
-    decoder_list = []
+    compress_list = []
     for i in range(len(maximum_fm) - 1):
         q_factor = maximum_fm[i] / 255
 
         q_table_dwt = torch.tensor([0.1, 0.1, 0.1, 0.1], dtype=torch.get_default_dtype())
-        q_list_dct = [75, 25, 25, 25, 25, 25, 25, 25,
+        q_list_dct = [25, 25, 25, 25, 25, 25, 25, 25,
                       50, 50, 50, 50, 50, 50, 100]
 
         q_table_dwt = q_table_dwt * 255 / maximum_fm[i]
 
-        encoder_seq = [
+        compress_seq = [
             QuantiUnsign(bit=8, q_factor=q_factor, is_shift=False).cuda(),
             FtMapShiftNorm(),
             CompressDCT(q_table=utils.q_table_dct_gen(q_list_dct)).cuda(),
             # CompressDWT(level=3, q_table=q_table_dwt, wave=wavelet).cuda()
         ]
-        decoder_seq = [
-            # CompressDWT(level=3, q_table=q_table_dwt, wave=wavelet, is_encoder=False).cuda(),
-            CompressDCT(q_table=utils.q_table_dct_gen(q_list_dct), is_encoder=False).cuda(),
-            FtMapShiftNorm(is_encoder=False),
-            QuantiUnsign(bit=8, q_factor=q_factor, is_encoder=False, is_shift=False).cuda()
-        ]
 
-        encoder_list.append(BypassSequential(*encoder_seq))
-        decoder_list.append(BypassSequential(*decoder_seq, is_encoder=False))
+        compress_list.append(Compress(BypassSequential(*compress_seq)))
 
     q_factor = maximum_fm[-1] / 255
     q_table_dwt = torch.tensor([10 ** 6, 10 ** 6, 10 ** 6, 1], dtype=torch.get_default_dtype())
-    q_list_dct = [75, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6,
+    q_list_dct = [25, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6,
                   10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6]
 
     q_table_dwt = q_table_dwt * 255 / maximum_fm[-1]
 
-    encoder_seq = [
+    compress_seq = [
         QuantiUnsign(bit=8, q_factor=q_factor).cuda(),
         CompressDCT(q_table=utils.q_table_dct_gen(q_list_dct)).cuda(),
         # CompressDWT(level=3, q_table=q_table_dwt, wave='haar').cuda()
     ]
-    decoder_seq = [
-        # CompressDWT(level=3, q_table=q_table_dwt, wave='haar', is_encoder=False).cuda(),
-        CompressDCT(q_table=utils.q_table_dct_gen(q_list_dct), is_encoder=False).cuda(),
-        QuantiUnsign(bit=8, q_factor=q_factor, is_encoder=False).cuda()
-    ]
 
-    encoder_list.append(BypassSequential(*encoder_seq))
-    decoder_list.append(BypassSequential(*decoder_seq, is_encoder=False))
+    compress_list.append(Compress(BypassSequential(*compress_seq)))
 
-    return encoder_list, decoder_list
+    return compress_list
 
 
 if __name__ == '__main__':

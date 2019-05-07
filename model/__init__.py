@@ -12,5 +12,7 @@ __all__ = [
     'CompressDCT',
     'CompressDWT',
     'QuantiUnsign',
-    'FtMapShiftNorm'
+    'FtMapShiftNorm',
+    'BypassSequential',
+    'Compress'
 ]

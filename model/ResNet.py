@@ -185,16 +185,12 @@ class ResNetStages(nn.Module):
             x = block(x)
             feature_maps.append(x.cpu())
             if self.compress is not None:
-                encoders = self.compress[0]
-                decoders = self.compress[1]
-                if type(encoders) is list or type(encoders) is tuple:
-                    fm_transform, bypass_stack = encoders[indx](x)
+                if type(self.compress) is list or type(self.compress) is tuple:
+                    x, fm_transform = self.compress[indx](x)
                     fm_transforms.append(self._to_cpu(fm_transform))
-                    x = decoders[indx]((fm_transform, bypass_stack))
                 else:
-                    fm_transform = encoders(x)
+                    x, fm_transform = self.compress(x)
                     fm_transforms.append(self._to_cpu(fm_transform))
-                    x = decoders(fm_transform)
 
         return x, feature_maps, fm_transforms
 

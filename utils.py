@@ -51,8 +51,8 @@ class HistMeter:
         self.__init__(codes)
 
     def update(self, in_stream):
-        assert ((in_stream % 1) < self.eps).max(), \
-            "in_stream need to be integers {}".format(((in_stream % 1) < self.eps).max())
+        assert (((in_stream % 1) > (1 - self.eps)) | ((in_stream % 1) < self.eps)).min(), \
+            "in_stream need to be integers"
         cnt = 0
         if len(in_stream.size()) > 1:
             in_stream = in_stream.view(-1)
@@ -116,13 +116,19 @@ class HistMeter:
             assert xmax > xmin, "Nothing??"
 
             for code in range(xmin, xmax + 1):
-                hist.append(self.hist[code])
+                if code != 0:
+                    hist.append(self.hist[code])
+                else:
+                    hist.append(0)
 
             plt_fn.bar(range(xmin, xmax + 1), hist, width=1)
 
         else:
             for code in codes:
-                hist.append(self.hist[code])
+                if code != 0:
+                    hist.append(self.hist[code])
+                else:
+                    hist.append(0)
 
             plt_fn.bar(codes, hist, width=1)
 
@@ -349,7 +355,8 @@ def gen_seg_dict(k, maximum, len_key=False):
         code_length_dict = {}
         for length in length_code_dict:
             for code in length_code_dict[length]:
-                code_length_dict[code] = length
+                if code < maximum:
+                    code_length_dict[code] = length
 
         return code_length_dict
 

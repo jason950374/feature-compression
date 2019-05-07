@@ -10,14 +10,17 @@ import os
 import time
 import random
 import torch.backends.cudnn as cudnn
-from model.ResNet import ResNetCifar
+from model.ResNet import ResNetCifar, resnet18
 from torch.autograd import Variable
 from model.compress import *
 
 parser = argparse.ArgumentParser("cifar")
 parser.add_argument('--dataset', type=str, default='cifar10', help='dataset')
 parser.add_argument('--batch_size', type=int, default=256, help='batch size')
-parser.add_argument('--data', type=str, default='/home/jason/data/', help='location of the data corpus relative to home')
+# parser.add_argument('--data', type=str, default='/home/jason/data/',
+#                       help='location of the data corpus relative to home')
+parser.add_argument('--data', type=str, default='/home/gasoon/datasets',
+                    help='location of the data corpus relative to home')
 parser.add_argument('--learning_rate', type=float, default=0.001, help='init learning rate for batch_size=256')
 parser.add_argument('--workers', type=int, default=4, help='workers for data loader')
 parser.add_argument('--momentum', type=float, default=0.9, help='momentum')
@@ -35,7 +38,8 @@ parser.add_argument('--wavelet', type=str, default="db1", help='Mother wavelet f
 parser.add_argument('--k', type=int, default=0, help="k for exponential-Golomb")
 
 args = parser.parse_args()
-args.save = 'ckpts/retrain_{}_{}'.format(args.wavelet, args.load[6:-9])
+# args.save = 'ckpts/retrain_{}_{}'.format(args.wavelet, args.load[6:-9])
+args.save = 'ckpts/retrain_ImageNet_{}'.format(args.wavelet)
 args.learning_rate = args.learning_rate * args.batch_size / 256
 
 
@@ -62,9 +66,8 @@ elif args.dataset == 'cifar100':
     utils.multiply_adds = 2
 elif args.dataset == 'imageNet':
     args.num_classes = 1000
-    args.epochs = 10
+    args.epochs = 30
     args.weight_decay = 1e-4
-    args.workers = 64
     args.usage_weight = 1
     utils.multiply_adds = 1
 else:
@@ -92,12 +95,27 @@ def main():
     train_queue, test_queue = utils.get_loader(args)
 
     # Build up the network
-    # model = nn.DataParallel(ResNetCifar().cuda())
-    model = ResNetCifar(args.depth, args.classes_num).cuda()
+    # Build up the network
+    if args.dataset == 'cifar10':
+        # model = nn.DataParallel(ResNetCifar().cuda())
+        model = ResNetCifar(args.depth, args.classes_num).cuda()
+    elif args.dataset == 'imageNet':
+        # model = nn.DataParallel(resnet18().cuda())
+        if args.depth == 18:
+            model = resnet18().cuda()
+        else:
+            raise NotImplementedError(
+                'Depth:{} is not supported.'.format(args.depth))
+    else:
+        raise NotImplementedError(
+            '{} dataset is not supported. Only support cifar10, cifar100 and imageNet.'.format(args.dataset))
 
     logging.info("param size = %fMB", utils.count_parameters_in_MB(model))
 
-    maximum_fm = [5.2, 6.7, 5.3, 5.8, 6.7, 7.6, 4.6, 5.7, 36]  # quick test for this ckpts
+    # quick test for this ckpts: cifar10_resnet20_0409_184724
+    # maximum_fm = [5.2, 6.7, 5.3, 5.8, 6.7, 7.6, 4.6, 5.7, 36]
+    # quick test for pretrain resnet18
+    maximum_fm = [11, 15.5, 14, 11.5, 8.5, 14, 11.5, 101]
     compress_list = compress_list_gen(args.depth, maximum_fm, args.wavelet)
 
     model.compress_replace(compress_list)
@@ -112,7 +130,12 @@ def main():
         weight_decay=args.weight_decay
     )
 
-    utils.load(model, args)
+    if args.dataset == 'imageNet':
+        net_dic = torch.load(args.load)
+        net_dic_fix = utils.imagenet_model_graph_mapping(net_dic, [2, 2, 2, 2])
+        model.load_state_dict(net_dic_fix)
+    else:
+        utils.load(model, args)
 
     # Set the objective function
     criterion = nn.CrossEntropyLoss()
@@ -121,7 +144,9 @@ def main():
     best_test_acc = 0.0
 
     if args.dataset == 'cifar10' or args.dataset == 'cifar100':
-         milestones = [15, 30]
+        milestones = [15, 30]
+    elif args.dataset == 'imageNet':
+        milestones = [10, 20]
     else:
         milestones = None
 

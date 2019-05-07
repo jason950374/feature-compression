@@ -4,7 +4,7 @@ from functional.dwt import DWTForward, DWTInverse
 if __name__ == '__main__':
     torch.set_default_dtype(torch.float64)
 
-    x = torch.Tensor(10, 64, 8, 8).cuda()
+    x = torch.Tensor(10, 64, 9, 9).cuda()
     # x = torch.Tensor(1, 1, 2, 2).cuda()
     # x.normal_(0, 1) * 255
     x.uniform_(0, 255)
@@ -13,14 +13,14 @@ if __name__ == '__main__':
     dwt = DWTForward(J=3, wave='db7', mode='per', separable=True).cuda()
     dwti = DWTInverse(wave='db7', mode='per', separable=True).cuda()
     X = dwt(x)
-    x_reconstruct = dwti(X)
+    x_reconstruct = dwti(X, x.size())
     error = torch.abs(x - x_reconstruct)
     assert error.max().item() < 1e-10, (error.mean(), error.max())
 
     dwt_nonsep = DWTForward(J=3, wave='db7', mode='per', separable=False).cuda()
     dwti_nonsep = DWTInverse(wave='db7', mode='per', separable=False).cuda()
     X_nonsep = dwt_nonsep(x)
-    x_reconstruct = dwti_nonsep(X_nonsep)
+    x_reconstruct = dwti_nonsep(X_nonsep, x.size())
     error = torch.abs(x - x_reconstruct)
     assert error.max().item() < 1e-10, (error.mean(), error.max())
     

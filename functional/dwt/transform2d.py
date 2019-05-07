@@ -128,7 +128,7 @@ class DWTInverse(nn.Module):
         self.mode = mode
         self.separable = separable
 
-    def forward(self, coeffs):
+    def forward(self, coeffs, out_shape=None):
         """
         Args:
             coeffs (yl, yh): tuple of lowpass and bandpass coefficients, where:
@@ -169,5 +169,12 @@ class DWTInverse(nn.Module):
             else:
                 c = torch.cat((ll[:, :, None], h), dim=2)
                 ll = lowlevel.sfb2d_nonsep(c, self.h, mode=self.mode)
+
+        # 'Unpad' added dimensions
+        if out_shape is not None:
+            if ll.shape[-2] > out_shape[-2]:
+                ll = ll[..., :-1, :]
+            if ll.shape[-1] > out_shape[-1]:
+                ll = ll[..., :-1]
 
         return ll

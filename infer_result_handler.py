@@ -134,7 +134,7 @@ class HandlerQuanti(InferResultHandler):
         self.states_updated = False
 
     def print_result(self):
-        if (self.code_length_dict is not None) or (not self.states_updated):
+        if (self.code_length_dict is not None) and (not self.states_updated):
             self.code_len = self.hist_meter.get_bit_cnt(self.code_length_dict)
         self.states_updated = True
         self.print_fn("==============================================================")
@@ -149,7 +149,7 @@ class HandlerQuanti(InferResultHandler):
 
     def set_config(self, code_length_dict=None):
         self.code_length_dict = code_length_dict
-        if (self.code_length_dict is not None) or (not self.states_updated):
+        if self.code_length_dict is not None:
             self.code_len = self.hist_meter.get_bit_cnt(self.code_length_dict)
         self.states_updated = True
 

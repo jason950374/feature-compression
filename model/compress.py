@@ -1,5 +1,6 @@
 import torch.nn as nn
 import torch
+import torch.nn.functional as F
 import functional as my_f
 from collections import OrderedDict
 
@@ -21,12 +22,8 @@ class EncoderDecoderPair(nn.Module):
     is_bypass = False
     bypass_indx = 1
 
-    def __init__(self, is_encoder=True):
+    def __init__(self):
         super(EncoderDecoderPair, self).__init__()
-        self.is_encoder = is_encoder
-
-    def __init_single__(self, is_encoder):
-        self.is_encoder = is_encoder
 
     def forward(self, *inputs):
         raise NotImplementedError
@@ -38,10 +35,9 @@ class CompressDCT(EncoderDecoderPair):
         Args:
             bit (int): Bits after quantization
             q_table: Quantization table
-            is_encoder (bool):  True if is encoder for CompressDCT. False if is decoder for CompressDCT
     """
-    def __init__(self, bit=8, q_table=None, is_encoder=True):
-        super(CompressDCT, self).__init__(is_encoder)
+    def __init__(self, bit=8, q_table=None):
+        super(CompressDCT, self).__init__()
         self.bit = bit
         if q_table is None:
             self.register_buffer('q_table', torch.ones(8, 8))
@@ -50,13 +46,13 @@ class CompressDCT(EncoderDecoderPair):
             self.register_buffer('q_table', q_table)
 
     # TODO  and BP path
-    def forward(self, x):
+    def forward(self, x, is_encoder=True):
         assert len(x.size()) == 4, "Dimension of x need to be 4, which corresponds to (N, C, H, W)"
         N, C, H, W = x.size()
         q_table = self.q_table.repeat(N, C, 1, 1)
         r_h = H % 8
         r_w = W % 8
-        if self.is_encoder:
+        if is_encoder:
             fm_transform = torch.zeros_like(x)
             for i_h in range(H // 8):
                 for i_w in range(W // 8):
@@ -85,6 +81,7 @@ class CompressDCT(EncoderDecoderPair):
             return fm_transform
         else:
             fm_transform = x
+            x = torch.ones_like(x)
             for i_h in range(H // 8):
                 for i_w in range(W // 8):
                     X = fm_transform[..., 8 * i_h:8 * (i_h + 1), 8 * i_w:8 * (i_w + 1)]
@@ -112,10 +109,9 @@ class CompressDWT(EncoderDecoderPair):
                     bit (int): Bits after quantization
                     q_table (list, tuple): Quantization table, scale is fine to coarse
                     wave (str, pywt.Wavelet, tuple or list): Mother wavelet
-                    is_encoder (bool):  True if is encoder for CompressDWT. False if is decoder for CompressDWT
         """
-    def __init__(self, level=1, bit=8, q_table=None, wave='haar', rand_factor=0., is_encoder=True):
-        super(CompressDWT, self).__init__(is_encoder)
+    def __init__(self, level=1, bit=8, q_table=None, wave='haar', rand_factor=0.):
+        super(CompressDWT, self).__init__()
         self.bit = bit
         if q_table is None:
             self.register_buffer('q_table', torch.ones(level))
@@ -124,13 +120,11 @@ class CompressDWT(EncoderDecoderPair):
             self.register_buffer('q_table', q_table)
         self.level = level
         self.rand_factor = rand_factor
-        if is_encoder:
-            self.DWT = my_f.DWT(J=level, wave=wave, mode='periodization', separable=False)
-        else:
-            self.IDWT = my_f.IDWT(wave=wave, mode='periodization', separable=False)
+        self.DWT = my_f.DWT(J=level, wave=wave, mode='periodization', separable=False)
+        self.IDWT = my_f.IDWT(wave=wave, mode='periodization', separable=False)
 
-    def forward(self, x):
-        if self.is_encoder:
+    def forward(self, x, is_encoder=True):
+        if is_encoder:
             assert len(x.size()) == 4, "Dimension of x need to be 4, which corresponds to (N, C, H, W)"
             XL, XH = self.DWT(x)
             XL = XL / self.q_table[-1]
@@ -147,10 +141,11 @@ class CompressDWT(EncoderDecoderPair):
 
         else:
             assert len(x) == 2, "Must be tuple include LL and Hs"
-            XL, XH = x
+            XL, XH_org = x
             XL = XL * self.q_table[-1]
+            XH = []
             for i in range(self.level):
-                XH[i] = XH[i] * self.q_table[i]
+                XH.append(XH_org[i] * self.q_table[i])
 
             x = self.IDWT((XL, XH))
 
@@ -165,16 +160,15 @@ class QuantiUnsign(EncoderDecoderPair):
                     bit (int): Bits of integer after quantization
                     q_factor (float): scale factor to match the range  after quantization
                     is_shift (bool): Shift range of value from unsigned to symmetric signed
-                    is_encoder (bool):  True if is encoder for QuantiUnsign. False if is decoder for QuantiUnsign
             """
-    def __init__(self, bit=8, q_factor=1., is_shift=False, is_encoder=True):
-        super(QuantiUnsign, self).__init__(is_encoder)
+    def __init__(self, bit=8, q_factor=1., is_shift=False):
+        super(QuantiUnsign, self).__init__()
         self.bit = bit
         self.q_factor = q_factor
         self.is_shift = is_shift
 
-    def forward(self, x):
-        if self.is_encoder:
+    def forward(self, x, is_encoder=True):
+        if is_encoder:
             x /= self.q_factor
             x = torch.round(x).detach() + x - x.detach()
             x = x.clamp(0, 2 ** self.bit - 1)
@@ -197,16 +191,16 @@ class FtMapShiftNorm(EncoderDecoderPair):
     is_bypass = True
     bypass_indx = 1
 
-    def __init__(self, is_encoder=True):
-        super(FtMapShiftNorm, self).__init__(is_encoder)
+    def __init__(self):
+        super(FtMapShiftNorm, self).__init__()
 
-    def forward(self, x):
+    def forward(self, x, is_encoder=True):
         """
                 First dimension of input seem as batch
                     For encoder: arg is input
                     For decoder: arg is both input and mean
             """
-        if self.is_encoder:
+        if is_encoder:
             x_mean = x
             for i in range(1, len(x_mean.size())):
                 x_mean = x_mean.mean(i, keepdim=True)
@@ -218,35 +212,94 @@ class FtMapShiftNorm(EncoderDecoderPair):
             return x
 
 
-class BypassSequential(nn.Sequential, EncoderDecoderPair):
+class Transform(EncoderDecoderPair):
+    def __init__(self, channel_num):
+        super(Transform, self).__init__()
+        self.transform_matrix = nn.Parameter(torch.Tensor(channel_num, channel_num))
+        self.inverse_matrix = nn.Parameter(torch.Tensor(channel_num, channel_num))
+
+        nn.init.kaiming_normal_(self.transform_matrix)
+
+    def forward(self, x, is_encoder=True):
+        if is_encoder:
+            weight = self.transform_matrix.unsqueeze(-1)
+            weight = weight.unsqueeze(-1)
+            x_tr = F.conv2d(x, weight)
+
+            return x_tr
+
+        else:
+            weight = self.inverse_matrix.unsqueeze(-1)
+            weight = weight.unsqueeze(-1)
+            x = F.conv2d(x, weight)
+
+            return x
+
+    def update(self):
+        self.inverse_matrix.data = torch.pinverse(self.transform_matrix)
+
+
+class DownSampleBranch(nn.Sequential):
     """
-                Sequential with bypass path
-                Input need to be EncoderDecoderPair to ensure
+                DownSample Branch. Given transforms will apply to both paths
+                Input need to be EncoderDecoderPair to ensure have both encode decode path
                 Args:
                         *args  (List[EncoderDecoderPair], Tuple[EncoderDecoderPair]): Sequence of EncoderDecoderPair
-                        is_encoder (bool):  True if is encoder for FtMapShiftNorm.
-                                                    False if is decoder for FtMapShiftNorm
             """
-    def __init__(self, *args, is_encoder=True):
-        super(BypassSequential, self).__init__()
-        super(nn.Sequential, self).__init_single__(is_encoder)
+    def __init__(self, *args):
+        super(DownSampleBranch, self).__init__()
 
         if len(args) == 1 and isinstance(args[0], OrderedDict):
             for key, module in args[0].items():
                 assert isinstance(module, EncoderDecoderPair), "BypassSequential only accept EncoderDecoderPair"
-                assert module.is_encoder == is_encoder, "is_encoder of sub module does not match"
                 self.add_module(key, module)
         else:
             for idx, module in enumerate(args):
                 assert isinstance(module, EncoderDecoderPair), "BypassSequential only accept EncoderDecoderPair"
-                assert module.is_encoder == is_encoder, "is_encoder of sub module does not match"
                 self.add_module(str(idx), module)
 
-    def forward(self, x):
-        if self.is_encoder:
+    def forward(self, x, is_encoder=True):
+        if is_encoder:
+            x_org, x_dn = x.chunk(2, dim=-1)
+            x_dn = F.conv2d(x_dn, 2)
+
+            return x_org, x_dn
+        else:
+            x_org, x_dn = x
+
+            x_up = F.interpolate(x_dn, scale_factor=2)
+
+            x = torch.cat((x_org, x_up), dim=1)
+
+            return x
+
+
+class BypassSequential(nn.Sequential):
+    """
+            Sequential with bypass path
+            Input need to be EncoderDecoderPair to ensure have both encode decode path
+            The sequence of decoder will reverse automatically
+
+            Args:
+                    *args  (List[EncoderDecoderPair], Tuple[EncoderDecoderPair]): Sequence of EncoderDecoderPair
+        """
+    def __init__(self, *args):
+        super(BypassSequential, self).__init__()
+
+        if len(args) == 1 and isinstance(args[0], OrderedDict):
+            for key, module in args[0].items():
+                assert isinstance(module, EncoderDecoderPair), "BypassSequential only accept EncoderDecoderPair"
+                self.add_module(key, module)
+        else:
+            for idx, module in enumerate(args):
+                assert isinstance(module, EncoderDecoderPair), "BypassSequential only accept EncoderDecoderPair"
+                self.add_module(str(idx), module)
+
+    def forward(self, x, is_encoder=True):
+        if is_encoder:
             bypass_stack = []
             for module in self._modules.values():
-                x = module(x)
+                x = module(x, is_encoder=True)
                 if module.is_bypass:
                     bypass = x[module.bypass_indx:]
                     x = x[:module.bypass_indx]
@@ -259,9 +312,30 @@ class BypassSequential(nn.Sequential, EncoderDecoderPair):
             return x, bypass_stack
         else:
             x, bypass_stack = x
-            for indx, module in enumerate(self._modules.values()):
+            for indx, module in enumerate(reversed(self._modules.values())):
                 if module.is_bypass:
-                    x = module((x, bypass_stack[-indx]))
+                    x = module((x, bypass_stack[-indx]), is_encoder=False)
                 else:
-                    x = module(x)
-            return x
+                    x = module(x, is_encoder=False)
+
+        return x
+
+
+class Compress(nn.Module):
+    """
+                Forward do both encode and decode
+                Args:
+                    compress (nn.Module): compress module, need to have both encode and decode ability
+
+                Return:
+                    x, fm_transforms
+            """
+    def __init__(self, compress):
+        super(Compress, self).__init__()
+        self.compress = compress
+
+    def forward(self, x):
+        fm_transforms = self.compress(x, is_encoder=True)
+        x = self.compress(fm_transforms, is_encoder=False)
+        fm_transforms, bypass_stack = fm_transforms  # TODO clean up
+        return x, fm_transforms

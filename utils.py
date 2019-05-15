@@ -8,129 +8,12 @@ import torchvision.transforms as transforms
 from torch.autograd import Variable
 import torchvision.datasets as datasets
 import torchvision.datasets as dset
+from collections.abc import Iterable
 import matplotlib
+
+from meter import AverageMeter
+
 matplotlib.use('Agg')
-from matplotlib import pyplot as plt
-
-
-class AverageMeter:
-    """
-    On-line Average Meter
-    """
-
-    def __init__(self):
-        self.avg = 0
-        self.sum = 0
-        self.cnt = 0
-
-    def reset(self):
-        self.__init__()
-
-    def update(self, val, n=1):
-        self.sum += val * n
-        self.cnt += n
-        self.avg = self.sum / self.cnt
-
-
-class HistMeter:
-    eps = 10 ** -4
-
-    def __init__(self, codes=None):
-        self.hist = {}
-        # __init__ also used in reset. If codes=None, use old self.codes
-        if codes is not None:
-            self.codes = codes
-
-        try:
-            for code in self.codes:
-                self.hist[code] = 0
-        except AttributeError:
-            self.codes = None
-
-    def reset(self, codes=None):
-        self.__init__(codes)
-
-    def update(self, in_stream):
-        assert (((in_stream % 1) > (1 - self.eps)) | ((in_stream % 1) < self.eps)).min(), \
-            "in_stream need to be integers"
-        cnt = 0
-        if len(in_stream.size()) > 1:
-            in_stream = in_stream.view(-1)
-        size = in_stream.size(0)
-
-        for code in self.hist:
-            match = (in_stream <= (code + self.eps)) & (in_stream >= (code - self.eps))
-            cnt += int(match.sum().item())
-            self.hist[code] += match.sum()
-
-        assert cnt == size, \
-            "{} vs. {}: Some code in in_stream not find in self.hist".format(cnt, size)
-
-    def get_bit_cnt(self, code_length_dict):
-        r"""
-            Bit cnt for given histogram with dictionary of code length
-
-            Args:
-                    hist (dict):  Input histogram dictionary (code, cnt)
-                    code_length_dict (dict): code_length_dict, key(int) is code_length, value is iterable codes before
-                        encoding
-
-            Note:
-                    Different from bins of numpy.histogram, hist and code has same length.
-                    Normally, code_list[i] can be
-                    :math:`\frac{bins[i]+bins[i+1]}{2}`
-
-            Returns:
-                    Total length (bits)
-            """
-        total_len = 0
-
-        for code in self.hist:
-            total_len += self.hist[code] * code_length_dict[code]
-
-        return total_len
-
-    def plt_hist(self, plt_fn=None, tight=True):
-        if plt_fn is None:
-            plt_fn = plt
-
-        codes = np.asarray(list(self.hist.keys()))
-        codes.sort()
-        xmin = codes[0]
-        xmax = codes[-1]
-
-        hist = []
-        if tight:
-            for code in codes:
-                if self.hist[code] == 0:
-                    xmin = code
-                else:
-                    break
-
-            for code in reversed(codes):
-                if self.hist[code] == 0:
-                    xmax = code
-                else:
-                    break
-
-            assert xmax > xmin, "Nothing??"
-
-            for code in range(xmin, xmax + 1):
-                if code != 0:
-                    hist.append(self.hist[code])
-                else:
-                    hist.append(0)
-
-            plt_fn.bar(range(xmin, xmax + 1), hist, width=1)
-
-        else:
-            for code in codes:
-                if code != 0:
-                    hist.append(self.hist[code])
-                else:
-                    hist.append(0)
-
-            plt_fn.bar(codes, hist, width=1)
 
 
 def create_exp_dir(path, scripts_to_save=None):
@@ -522,6 +405,29 @@ def imagenet_model_graph_mapping(pretrain_dic, ns):
         mapped_dic[k_new] = pretrain_dic[k]
 
     return mapped_dic
+
+
+def iterable_l2(x):
+    if isinstance(x, torch.Tensor):
+        x = x.cuda()
+        return (x * x).sum()
+
+    elif isinstance(x, Iterable):
+        l2 = 0
+        for x_e in x:
+            l2 += iterable_l2(x_e)
+        return l2
+
+
+def iterable_l1(x):
+    if isinstance(x, torch.Tensor):
+        return x.cuda().abs().sum()
+
+    elif isinstance(x, Iterable):
+        l2 = 0
+        for x_e in x:
+            l2 += iterable_l1(x_e)
+        return l2
 
 
 if __name__ == '__main__':

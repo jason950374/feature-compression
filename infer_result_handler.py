@@ -1,7 +1,8 @@
 import torch
 from matplotlib import pyplot as plt
 
-from utils import AverageMeter, HistMeter, accuracy
+from utils import accuracy
+from meter import *
 
 
 class InferResultHandler:
@@ -19,16 +20,13 @@ class InferResultHandler:
 
 
 class HandlerAcc(InferResultHandler):
-    def __init__(self, print_fn=None):
+    def __init__(self, print_fn=print):
         # State
         self.top1 = AverageMeter()
         self.top5 = AverageMeter()
 
         # IO
-        if print_fn is not None:
-            self.print_fn = print_fn
-        else:
-            self.print_fn = print
+        self.print_fn = print_fn
 
     def update_batch(self, result, inputs=None):
         assert inputs is not None, "HandlerAcc need target label"
@@ -47,20 +45,17 @@ class HandlerAcc(InferResultHandler):
 
 
 class HandlerFm(InferResultHandler):
-    def __init__(self, print_fn=None, print_sparsity=True, print_range_all=False, print_range_layer=True):
+    def __init__(self, print_fn=print, print_sparsity=True, print_range_all=False, print_range_layer=True):
         # State
+        self.states_updated = False
         self.zero_cnt = 0
         self.size_flat = 0
-        self.maximum = -2 ** 40
-        self.minimum = 2 ** 40
-        self.maximums = []
-        self.minimums = []
+        self.max_mins = []
+        self.max = -2 ** 40
+        self.min = 2 ** 40
 
         # IO
-        if print_fn is not None:
-            self.print_fn = print_fn
-        else:
-            self.print_fn = print
+        self.print_fn = print_fn
 
         # config
         self.print_sparsity = print_sparsity
@@ -70,18 +65,14 @@ class HandlerFm(InferResultHandler):
     def update_batch(self, result, inputs=None):
         _, feature_maps_batch, _ = result
         for layer_num, feature_map_batch in enumerate(feature_maps_batch):
-            self.zero_cnt += (feature_map_batch.cuda().abs() < 10 ** -10).sum().item()
-            self.size_flat += feature_map_batch.view(-1).size(0)
-            layer_max = feature_map_batch.cuda().max().item()
-            layer_min = feature_map_batch.cuda().min().item()
-            self.maximum = max(self.maximum, layer_max)
-            self.minimum = min(self.minimum, layer_min)
-            if len(self.maximums) <= layer_num:
-                self.maximums.append(layer_max)
-                self.minimums.append(layer_min)
-            else:
-                self.maximums[layer_num] = max(self.maximums[layer_num], layer_max)
-                self.minimums[layer_num] = min(self.minimums[layer_num], layer_min)
+            feature_map_batch_cuda = feature_map_batch.cuda()
+            self.zero_cnt += (feature_map_batch_cuda.abs() < 10 ** -10).sum().item()
+            self.size_flat += feature_map_batch_cuda.view(-1).size(0)
+            if len(self.max_mins) <= layer_num:
+                self.max_mins.append(MaxMinMeter())
+            self.max_mins[layer_num].update(feature_map_batch_cuda)
+
+        self.states_updated = False
 
     def print_result(self):
         self.print_fn("==============================================================")
@@ -90,90 +81,173 @@ class HandlerFm(InferResultHandler):
             self.print_fn("feature_maps size: {}".format(self.size_flat))
             self.print_fn("sparsity: {}".format(self.zero_cnt / self.size_flat))
         if self.print_range_all:
-            self.print_fn("range: ({}, {})".format(self.minimum, self.maximum))
+            if not self.states_updated:
+                for layer_num, meter in enumerate(self.max_mins):
+                    self.max = max(self.max, meter.max)
+                    self.min = min(self.min, meter.min)
+            self.print_fn("range: ({}, {})".format(self.min, self.max))
         if self.print_range_layer:
-            for layer_num, minimum, maximum in zip(range(len(self.maximums)), self.minimums, self.maximums):
-                self.print_fn("range in layer{}:  ({}, {})".format(layer_num, minimum, maximum))
+            for layer_num, meter in enumerate(self.max_mins):
+                self.print_fn("range in layer{}:  ({}, {})".format(layer_num, meter.max, meter.min))
         self.print_fn("==============================================================")
 
-    def set_config(self, print_sparsity=True, print_range_all=True, print_range_layer=False):
+    def set_config(self, print_sparsity=True, print_range_all=False, print_range_layer=True):
         self.print_sparsity = print_sparsity
         self.print_range_all = print_range_all
         self.print_range_layer = print_range_layer
 
 
 class HandlerQuanti(InferResultHandler):
-    def __init__(self, print_fn=None, code_length_dict=None):
+    def __init__(self, print_fn=print, code_length_dict=None, print_sparsity=True, print_range_all=False,
+                 print_range_layer=True):
         # State
         self.states_updated = False
         self.zero_cnt = 0
         self.size_flat = 0
-        self.maximum = -2 ** 40
-        self.minimum = 2 ** 40
+        self.max_mins = []
+        self.max = -2 ** 40
+        self.min = 2 ** 40
         self.code_len = 0
         if code_length_dict is not None:
             self.hist_meter = HistMeter(code_length_dict)
 
         # IO
-        if print_fn is not None:
-            self.print_fn = print_fn
-        else:
-            self.print_fn = print
+        self.print_fn = print_fn
 
         # Config
         self.code_length_dict = code_length_dict
+        self.print_sparsity = print_sparsity
+        self.print_range_all = print_range_all
+        self.print_range_layer = print_range_layer
 
     def update_batch(self, result, inputs=None):
         _, _, fm_transforms_batch = result
-        for feature_map_batch in fm_transforms_batch:
-            self.zero_cnt += (feature_map_batch.cuda().abs() < 10 ** -10).sum().item()
-            self.size_flat += feature_map_batch.view(-1).size(0)
-            self.maximum = max(self.maximum, feature_map_batch.cuda().max())
-            self.minimum = min(self.minimum, feature_map_batch.cuda().min().item())
-            self.hist_meter.update(feature_map_batch.cuda())
+        for layer_num, fm_transform_batch in enumerate(fm_transforms_batch):
+            fm_transform_batch_cuda = fm_transform_batch.cuda()
+            self.zero_cnt += (fm_transform_batch_cuda.abs() < 10 ** -10).sum().item()
+            self.size_flat += fm_transform_batch_cuda.view(-1).size(0)
+            if len(self.max_mins) <= layer_num:
+                self.max_mins.append(MaxMinMeter())
+            self.max_mins[layer_num].update(fm_transform_batch_cuda)
+            self.hist_meter.update(fm_transform_batch_cuda)
         self.states_updated = False
 
     def print_result(self):
-        if (self.code_length_dict is not None) and (not self.states_updated):
-            self.code_len = self.hist_meter.get_bit_cnt(self.code_length_dict)
-        self.states_updated = True
+        if not self.states_updated:
+            if self.code_length_dict is not None:
+                self.code_len = self.hist_meter.get_bit_cnt(self.code_length_dict)
+            if self.print_range_all:
+                for layer_num, meter in enumerate(self.max_mins):
+                    self.max = max(self.max, meter.max)
+                    self.min = min(self.min, meter.min)
+            self.states_updated = True
+
         self.print_fn("==============================================================")
-        self.print_fn("feature_maps == 0: {}".format(self.zero_cnt))
-        self.print_fn("feature_maps size: {}".format(self.size_flat))
-        self.print_fn("sparsity: {}".format(self.zero_cnt / self.size_flat))
-        self.print_fn("range ({}, {})".format(self.minimum, self.maximum))
+        if self.print_sparsity:
+            self.print_fn("feature_maps == 0: {}".format(self.zero_cnt))
+            self.print_fn("feature_maps size: {}".format(self.size_flat))
+            self.print_fn("sparsity: {}".format(self.zero_cnt / self.size_flat))
+        if self.print_range_all:
+            self.print_fn("range: ({}, {})".format(self.min, self.max))
+        if self.print_range_layer:
+            for layer_num, meter in enumerate(self.max_mins):
+                self.print_fn("range in layer{}:  ({}, {})".format(layer_num, meter.max, meter.min))
         self.print_fn("code length {}".format(self.code_len))
         self.print_fn("Compress rate {}/{} = {}".format(self.size_flat * 8, self.code_len,
                                                         self.size_flat * 8 / self.code_len))
         self.print_fn("==============================================================")
 
-    def set_config(self, code_length_dict=None):
+    def set_config(self, code_length_dict=None, print_sparsity=True, print_range_all=False, print_range_layer=True):
         self.code_length_dict = code_length_dict
         if self.code_length_dict is not None:
             self.code_len = self.hist_meter.get_bit_cnt(self.code_length_dict)
         self.states_updated = True
+        self.print_sparsity = print_sparsity
+        self.print_range_all = print_range_all
+        self.print_range_layer = print_range_layer
 
 
-class HandlerDWT_Fm(InferResultHandler):
-    def __init__(self, print_fn=None, save="", code_length_dict=None):
+class HandlerTrans(InferResultHandler):
+    def __init__(self, print_fn=print, print_sparsity=True, print_range_all=False,
+                 print_range_layer=True):
+        # State
         self.states_updated = False
         self.zero_cnt = 0
         self.size_flat = 0
-        self.maximum = -2 ** 40
-        self.minimum = 2 ** 40
+        self.max_mins = []
+        self.max = -2 ** 40
+        self.min = 2 ** 40
         self.code_len = 0
-        self.hist_meters = []
 
         # IO
-        if print_fn is not None:
-            self.print_fn = print_fn
-        else:
-            self.print_fn = print
+        self.print_fn = print_fn
+
+        # Config
+        self.print_sparsity = print_sparsity
+        self.print_range_all = print_range_all
+        self.print_range_layer = print_range_layer
+
+    def update_batch(self, result, inputs=None):
+        _, _, fm_transforms_batch = result
+        for layer_num, fm_transform_batch in enumerate(fm_transforms_batch):
+            fm_transform_batch_cuda = fm_transform_batch.cuda()
+            self.zero_cnt += (fm_transform_batch_cuda.abs() < 10 ** -10).sum().item()
+            self.size_flat += fm_transform_batch_cuda.view(-1).size(0)
+            if len(self.max_mins) <= layer_num:
+                self.max_mins.append(MaxMinMeter())
+            self.max_mins[layer_num].update(fm_transform_batch_cuda)
+        self.states_updated = False
+
+    def print_result(self):
+        if not self.states_updated:
+            if self.print_range_all:
+                for layer_num, meter in enumerate(self.max_mins):
+                    self.max = max(self.max, meter.max)
+                    self.min = min(self.min, meter.min)
+            self.states_updated = True
+
+        self.print_fn("==============================================================")
+        if self.print_sparsity:
+            self.print_fn("feature_maps == 0: {}".format(self.zero_cnt))
+            self.print_fn("feature_maps size: {}".format(self.size_flat))
+            self.print_fn("sparsity: {}".format(self.zero_cnt / self.size_flat))
+        if self.print_range_all:
+            self.print_fn("range: ({}, {})".format(self.min, self.max))
+        if self.print_range_layer:
+            for layer_num, meter in enumerate(self.max_mins):
+                self.print_fn("range in layer{}:  ({}, {})".format(layer_num, meter.max, meter.min))
+        self.print_fn("==============================================================")
+
+    def set_config(self, print_sparsity=True, print_range_all=False, print_range_layer=True):
+        self.print_sparsity = print_sparsity
+        self.print_range_all = print_range_all
+        self.print_range_layer = print_range_layer
+
+
+class HandlerDWT_Fm(InferResultHandler):
+    def __init__(self, print_fn=print, save="", code_length_dict=None, print_sparsity=True, print_range_all=False,
+                 print_range_layer=True):
+        self.states_updated = False
+        self.zero_cnt = 0
+        self.size_flat = 0
+        self.max_mins = []
+        self.max = -2 ** 40
+        self.min = 2 ** 40
+        self.code_len = 0
+        self.hist_meters = []
+        self.max_ch = []
+        self.min_ch = []
+
+        # IO
+        self.print_fn = print_fn
 
         self.save = save
 
         # Config
         self.code_length_dict = code_length_dict
+        self.print_sparsity = print_sparsity
+        self.print_range_all = print_range_all
+        self.print_range_layer = print_range_layer
 
     def update_batch(self, result, inputs=None):
         _, _, fm_transforms_batch = result
@@ -184,29 +258,67 @@ class HandlerDWT_Fm(InferResultHandler):
             assert type(feature_map_batch) is tuple, "fm_transform_batch is not tuple, make sure it's DWT"
 
             XL, XH = feature_map_batch
+            XL_cuda = XL.cuda()
 
-            self.zero_cnt += (XL.cuda().abs() < 10 ** -10).sum().item()
-            self.size_flat += XL.view(-1).size(0)
-            self.maximum = max(self.maximum, XL.cuda().max().item())
-            self.minimum = min(self.minimum, XL.cuda().min().item())
+            if len(self.max_mins) <= layer_num:
+                self.max_mins.append(MaxMinMeter())
+
+            '''
+            max_c, _ = XL_cuda.max(dim=0)
+            min_c, _ = XL_cuda.min(dim=0)
+            for _ in range(2):
+                max_c, _ = max_c.max(dim=1)
+                min_c, _ = min_c.min(dim=1)
+            if len(self.max_ch) <= layer_num:
+                self.max_ch.append(max_c)
+                self.min_ch.append(min_c)
+            else:
+                max_c, _ = torch.stack((self.max_ch[layer_num], max_c)).max(0)
+                min_c, _ = torch.stack((self.min_ch[layer_num], min_c)).min(0)
+                self.max_ch[layer_num] = max_c
+                self.min_ch[layer_num] = min_c'''
+
             if len(self.hist_meters) <= layer_num:
                 self.hist_meters.append((HistMeter(self.code_length_dict), []))
 
-            self.hist_meters[layer_num][0].update(XL.cuda())
+            self.zero_cnt += (XL_cuda.abs() < 10 ** -10).sum().item()
+            self.size_flat += XL_cuda.view(-1).size(0)
+            self.max_mins[layer_num].update(XL_cuda)
+            self.hist_meters[layer_num][0].update(XL_cuda)
 
             for i, xh in enumerate(XH):
-                self.zero_cnt += (xh.cuda().abs() < 10 ** -10).sum().item()
-                self.size_flat += xh.view(-1).size(0)
-                self.maximum = max(self.maximum, xh.cuda().max().item())
-                self.minimum = min(self.minimum, xh.cuda().min().item())
+                xh_cuda = xh.cuda()
+                self.zero_cnt += (xh_cuda.abs() < 10 ** -10).sum().item()
+                self.size_flat += xh_cuda.view(-1).size(0)
+                self.max_mins[layer_num].update(xh_cuda)
+                '''
+                if i == 0:
+                    max_c, _ = xh_cuda.max(dim=0)
+                    min_c, _ = xh_cuda.min(dim=0)
+                    for _ in range(3):
+                        max_c, _ = max_c.max(dim=1)
+                        min_c, _ = min_c.min(dim=1)
+                    if len(self.max_ch) <= layer_num:
+                        self.max_ch.append(max_c)
+                        self.min_ch.append(min_c)
+                    else:
+                        max_c, _ = torch.stack((self.max_ch[layer_num], max_c)).max(0)
+                        min_c, _ = torch.stack((self.min_ch[layer_num], min_c)).min(0)
+                        self.max_ch[layer_num] = max_c
+                        self.min_ch[layer_num] = min_c'''
 
                 if len(self.hist_meters[layer_num][1]) <= i:
                     self.hist_meters[layer_num][1].append(HistMeter(self.code_length_dict))
 
-                self.hist_meters[layer_num][1][i].update(xh.cuda())
+                self.hist_meters[layer_num][1][i].update(xh_cuda)
 
     def print_result(self):
         if not self.states_updated:
+            if self.print_range_all:
+                for layer_num, meter in enumerate(self.max_mins):
+                    self.max = max(self.max, meter.max)
+                    self.min = min(self.min, meter.min)
+
             assert self.hist_meters is not None, "Please update before print"
             self.code_len = 0
             figure = plt.figure()
@@ -232,22 +344,47 @@ class HandlerDWT_Fm(InferResultHandler):
             self.states_updated = True
 
         self.print_fn("==============================================================")
-        self.print_fn("fm_transforms == 0: {}".format(self.zero_cnt))
-        self.print_fn("fm_transforms size: {}".format(self.size_flat))
-        self.print_fn("transform sparsity: {}".format(self.zero_cnt / self.size_flat))
-        self.print_fn("transform range ({}, {})".format(self.minimum, self.maximum))
+        '''
+        for layer, max_c, min_c in zip(range(len(self.max_ch)), self.max_ch, self.min_ch):
+            self.print_fn("---------- Layer {} -----------".format(layer))
+            self.print_fn(max_c)
+            self.print_fn(min_c)
+            self.print_fn("")'''
+
+        if self.print_sparsity:
+            self.print_fn("fm_transforms == 0: {}".format(self.zero_cnt))
+            self.print_fn("fm_transforms size: {}".format(self.size_flat))
+            self.print_fn("transform sparsity: {}".format(self.zero_cnt / self.size_flat))
+            '''
+            for layer_num, meters_layer in enumerate(self.hist_meters):
+                zero_cnt = meters_layer[0].hist[0]
+                size_total = meters_layer[0].size_total
+                for meter in meters_layer[1]:
+                    zero_cnt += meter.hist[0]
+                    size_total += meter.size_total
+                self.print_fn("zero count in layer{}:  {}".format(layer_num, zero_cnt))
+                self.print_fn("sparsity in layer{}:  {}".format(layer_num, zero_cnt / size_total))'''
+        if self.print_range_all:
+            self.print_fn("range: ({}, {})".format(self.min, self.max))
+        if self.print_range_layer:
+            for layer_num, meter in enumerate(self.max_mins):
+                self.print_fn("range in layer{}:  ({}, {})".format(layer_num, meter.max, meter.min))
         self.print_fn("code length {}".format(self.code_len))
         self.print_fn("Compress rate {}/{}= {}".format(self.size_flat * 8, self.code_len,
                                                        self.size_flat * 8 / self.code_len))
         self.print_fn("==============================================================")
 
-    def set_config(self, code_length_dict=None):
+    def set_config(self, code_length_dict=None, print_sparsity=True, print_range_all=False,
+                   print_range_layer=True):
         self.states_updated = False
         self.code_length_dict = code_length_dict
+        self.print_sparsity = print_sparsity
+        self.print_range_all = print_range_all
+        self.print_range_layer = print_range_layer
 
 
 class HandlerDCT_Fm(InferResultHandler):
-    def __init__(self, print_fn=None, save="", code_length_dict=None):
+    def __init__(self, print_fn=print, save="", code_length_dict=None):
         # states
         self.states_updated = True
         self.zero_cnt = 0
@@ -258,10 +395,7 @@ class HandlerDCT_Fm(InferResultHandler):
         self.hist_meters = []
 
         # IO
-        if print_fn is not None:
-            self.print_fn = print_fn
-        else:
-            self.print_fn = print
+        self.print_fn = print_fn
 
         self.save = save
 

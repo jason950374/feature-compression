@@ -134,6 +134,10 @@ class ResNetStages(nn.Module):
         self.layers = nn.Sequential(*self.layers)
         self.compress = copy.deepcopy(compress)
 
+        if type(self.compress) is list or type(self.compress) is tuple:
+            for idx, module in enumerate(self.compress):
+                self.add_module("compress" + str(idx), module)
+
     @staticmethod
     def _make_layer(block, in_planes, planes, blocks, stride=1):
         downsample = None
@@ -177,6 +181,16 @@ class ResNetStages(nn.Module):
             encoder list and decoder list
         """
         self.compress = copy.deepcopy(compress_new)
+        if type(self.compress) is list or type(self.compress) is tuple:
+            for idx, module in enumerate(self.compress):
+                self.add_module("compress" + str(idx), module)
+
+    def update(self):
+        if type(self.compress) is list or type(self.compress) is tuple:
+            for indx, block in enumerate(self.layers):
+                self.compress[indx].update()
+        else:
+            self.compress.update()
 
     def forward(self, x):
         feature_maps = []  # TODO clean up
@@ -240,6 +254,9 @@ class ResNetCifar(nn.Module):
     def compress_replace(self, compress_new):
         self.stages.compress_replace(compress_new)
 
+    def update(self):
+        self.stages.update()
+
 
 class ResNetImageNet(nn.Module):
     """
@@ -296,6 +313,9 @@ class ResNetImageNet(nn.Module):
     # TODO generalize
     def compress_replace(self, compress_new):
         self.stages.compress_replace(compress_new)
+
+    def update(self):
+        self.stages.update()
 
 
 def resnet18(zero_init_residual=False):

@@ -4,6 +4,8 @@ import torch.nn as nn
 import torch.cuda
 import torch.optim
 import glob
+
+import meter
 import utils
 import argparse
 import logging
@@ -47,8 +49,8 @@ logging.basicConfig(stream=sys.stdout, level=logging.INFO,
 fh = logging.FileHandler(os.path.join(args.save, 'log.txt'))
 fh.setFormatter(logging.Formatter(log_format))
 logging.getLogger().addHandler(fh)
-batch_time = utils.AverageMeter()
-data_time = utils.AverageMeter()
+batch_time = meter.AverageMeter()
+data_time = meter.AverageMeter()
 
 if args.dataset == 'cifar10':
     args.num_classes = 10
@@ -153,9 +155,7 @@ def main():
 
         # Evaluate the test accuracy
         if epoch > args.epochs_test:
-            test_acc, test_acc_5 = infer(test_queue, model)
-
-            this_acc = test_acc
+            this_acc, _ = infer(test_queue, model)
 
             if this_acc > best_test_acc:
                 best_test_acc = this_acc
@@ -171,9 +171,9 @@ def main():
 
 
 def train(train_queue, model, criterion, optimizer, cur_epoch, args, warm_up=False):
-    objs = utils.AverageMeter()
-    top1 = utils.AverageMeter()
-    top5 = utils.AverageMeter()
+    objs = meter.AverageMeter()
+    top1 = meter.AverageMeter()
+    top5 = meter.AverageMeter()
     model.train(True)
     total_step = len(train_queue)
 
@@ -183,7 +183,6 @@ def train(train_queue, model, criterion, optimizer, cur_epoch, args, warm_up=Fal
     suffix = 'Warm Up' if warm_up else 'Train'
 
     for step, (x, target) in enumerate(train_queue):
-        time.time()
         data_time.update(time.time() - end)
 
         x = Variable(x).cuda()
@@ -217,8 +216,8 @@ def train(train_queue, model, criterion, optimizer, cur_epoch, args, warm_up=Fal
 
 
 def infer(test_queue, model):
-    top1 = utils.AverageMeter()
-    top5 = utils.AverageMeter()
+    top1 = meter.AverageMeter()
+    top5 = meter.AverageMeter()
     model.eval()
     with torch.no_grad():
         for step, (x, target) in enumerate(test_queue):

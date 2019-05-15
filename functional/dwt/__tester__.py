@@ -1,9 +1,11 @@
 import torch
 from functional.dwt import DWTForward, DWTInverse
+from functional.dwt.lowlevel import *
 
 if __name__ == '__main__':
     torch.set_default_dtype(torch.float64)
 
+    '''
     x = torch.Tensor(10, 64, 9, 9).cuda()
     # x = torch.Tensor(1, 1, 2, 2).cuda()
     # x.normal_(0, 1) * 255
@@ -28,5 +30,8 @@ if __name__ == '__main__':
     assert error.max().item() < 1e-10, (error.mean(), error.max())
     for H, H_nonsep in zip(X[1], X_nonsep[1]):
         error = torch.abs(H - H_nonsep)
-        assert error.max().item() < 1e-10, (error.mean(), error.max())
+        assert error.max().item() < 1e-10, (error.mean(), error.max())'''
+
+    x = torch.Tensor(16, 11).cuda()
+
 

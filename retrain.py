@@ -2,6 +2,8 @@ import numpy as np
 import torch.cuda
 import torch.optim
 import glob
+
+import meter
 import utils
 import argparse
 import logging
@@ -18,7 +20,7 @@ parser = argparse.ArgumentParser("cifar")
 parser.add_argument('--dataset', type=str, default='cifar10', help='dataset')
 parser.add_argument('--batch_size', type=int, default=256, help='batch size')
 # parser.add_argument('--data', type=str, default='/home/jason/data/',
-#                       help='location of the data corpus relative to home')
+#                        help='location of the data corpus relative to home')
 parser.add_argument('--data', type=str, default='/home/gasoon/datasets',
                     help='location of the data corpus relative to home')
 parser.add_argument('--learning_rate', type=float, default=0.001, help='init learning rate for batch_size=256')
@@ -36,10 +38,12 @@ parser.add_argument('--load', type=str, default="")
 parser.add_argument('--epoch_start', type=int, default=0, help='Epoch number begin')
 parser.add_argument('--wavelet', type=str, default="db1", help='Mother wavelet for DWT')
 parser.add_argument('--k', type=int, default=0, help="k for exponential-Golomb")
+parser.add_argument('--l1_coe', type=float, default=0, help="coefficient of L1 regularizer for sparsity")
+parser.add_argument('--bit', type=int, default=8, help="coefficient of L1 regularizer for sparsity")
 
 args = parser.parse_args()
 # args.save = 'ckpts/retrain_{}_{}'.format(args.wavelet, args.load[6:-9])
-args.save = 'ckpts/retrain_ImageNet_{}'.format(args.wavelet)
+args.save = 'ckpts/retrain_dif_wavelet_{}'.format(args.wavelet)
 args.learning_rate = args.learning_rate * args.batch_size / 256
 
 
@@ -51,8 +55,8 @@ logging.basicConfig(stream=sys.stdout, level=logging.INFO,
 fh = logging.FileHandler(os.path.join(args.save, 'log.txt'))
 fh.setFormatter(logging.Formatter(log_format))
 logging.getLogger().addHandler(fh)
-batch_time = utils.AverageMeter()
-data_time = utils.AverageMeter()
+batch_time = meter.AverageMeter()
+data_time = meter.AverageMeter()
 
 if args.dataset == 'cifar10':
     args.num_classes = 10
@@ -112,11 +116,18 @@ def main():
 
     logging.info("param size = %fMB", utils.count_parameters_in_MB(model))
 
+    if args.dataset == 'imageNet':
+        net_dic = torch.load(args.load)
+        net_dic_fix = utils.imagenet_model_graph_mapping(net_dic, [2, 2, 2, 2])
+        model.load_state_dict(net_dic_fix)
+    else:
+        utils.load(model, args)
+
     # quick test for this ckpts: cifar10_resnet20_0409_184724
-    # maximum_fm = [5.2, 6.7, 5.3, 5.8, 6.7, 7.6, 4.6, 5.7, 36]
+    maximum_fm = [5.2, 6.7, 5.3, 5.8, 6.7, 7.6, 4.6, 5.7, 36]
     # quick test for pretrain resnet18
-    maximum_fm = [11, 15.5, 14, 11.5, 8.5, 14, 11.5, 101]
-    compress_list = compress_list_gen(args.depth, maximum_fm, args.wavelet)
+    # maximum_fm = [11, 15.5, 14, 11.5, 8.5, 14, 11.5, 101]
+    compress_list = compress_list_gen(maximum_fm, args.wavelet, args.bit)
 
     model.compress_replace(compress_list)
 
@@ -129,13 +140,6 @@ def main():
         momentum=args.momentum,
         weight_decay=args.weight_decay
     )
-
-    if args.dataset == 'imageNet':
-        net_dic = torch.load(args.load)
-        net_dic_fix = utils.imagenet_model_graph_mapping(net_dic, [2, 2, 2, 2])
-        model.load_state_dict(net_dic_fix)
-    else:
-        utils.load(model, args)
 
     # Set the objective function
     criterion = nn.CrossEntropyLoss()
@@ -160,9 +164,7 @@ def main():
 
         # Evaluate the test accuracy
         if epoch > args.epochs_test:
-            test_acc, test_acc_5 = infer(test_queue, model)
-
-            this_acc = test_acc
+            this_acc, _ = infer(test_queue, model)
 
             if this_acc > best_test_acc:
                 best_test_acc = this_acc
@@ -176,11 +178,18 @@ def main():
             utils.save_checkpoint(model, is_best, args.save, epoch)
             logging.info('============================================================================')
 
+        '''
+        if (epoch % 4) == 3 and (epoch < milestones[0]) or (epoch % 8) == 7 and (epoch < milestones[1]):
+            for m in model.modules():
+                if isinstance(m, CompressDWT):
+                    with torch.no_grad():
+                        m.q_table.data *= 1.05'''
+
 
 def train(train_queue, model, criterion, optimizer, cur_epoch, args, warm_up=False):
-    objs = utils.AverageMeter()
-    top1 = utils.AverageMeter()
-    top5 = utils.AverageMeter()
+    objs = meter.AverageMeter()
+    top1 = meter.AverageMeter()
+    top5 = meter.AverageMeter()
     model.train(True)
     total_step = len(train_queue)
 
@@ -190,20 +199,25 @@ def train(train_queue, model, criterion, optimizer, cur_epoch, args, warm_up=Fal
     suffix = 'Warm Up' if warm_up else 'Train'
 
     for step, (x, target) in enumerate(train_queue):
-        time.time()
         data_time.update(time.time() - end)
 
         x = Variable(x).cuda()
         target = Variable(target).cuda(async=True)
 
         # Forward propagation
-        logits, _, _ = model(x)
+        logits, _, fm_transforms = model(x)
+
         loss = criterion(logits, target)
+        if args.l1_coe > 1e-20:
+            l1 = utils.iterable_l1(fm_transforms)
+            loss += (l1 * args.l1_coe)
 
         optimizer.zero_grad()
         loss.backward()
         nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
         optimizer.step()
+
+        model.update()
 
         prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
         n = x.size(0)
@@ -224,8 +238,8 @@ def train(train_queue, model, criterion, optimizer, cur_epoch, args, warm_up=Fal
 
 
 def infer(test_queue, model):
-    top1 = utils.AverageMeter()
-    top5 = utils.AverageMeter()
+    top1 = meter.AverageMeter()
+    top5 = meter.AverageMeter()
     model.eval()
     with torch.no_grad():
         for step, (x, target) in enumerate(test_queue):
@@ -243,57 +257,44 @@ def infer(test_queue, model):
 
 
 # TODO put into utils?
-def compress_list_gen(depth, maximum_fm, wavelet='db1'):
-    encoder_list = []
-    decoder_list = []
-    for i in range(((depth - 2) // 2) - 1):
-        q_factor = maximum_fm[i] / 255
+def compress_list_gen(maximum_fm, wavelet='db1', bit=8):
+    compress_list = []
+    # channel = [16, 16, 16, 32, 32, 32, 64, 64, 64]
+    for i in range(len(maximum_fm) - 1):
+        q_factor = maximum_fm[i] / (2 ** bit - 1)
 
-        q_table_dwt = torch.tensor([0.1, 0.1, 0.1, 0.1], dtype=torch.get_default_dtype())
-        q_list_dct = [150, 50, 50, 50, 50, 50, 50, 50,
-                      100, 100, 100, 100, 100, 100, 200]
+        q_table_dwt = torch.tensor([0.1, 0.2, 0.3, 0.4], dtype=torch.get_default_dtype())
+        q_list_dct = [25, 25, 25, 25, 25, 25, 25, 25,
+                      25, 25, 25, 25, 25, 25, 25]
 
         q_table_dwt = q_table_dwt * 255 / maximum_fm[i]
 
-        encoder_seq = [
-            QuantiUnsign(bit=8, q_factor=q_factor, is_shift=False).cuda(),
+        compress_seq = [
+            # Transform(channel[i], init_value=q_factor).cuda(),
+            QuantiUnsign(bit=bit, q_factor=q_factor, is_shift=False).cuda(),
             FtMapShiftNorm(),
-            # CompressDCT(utils.q_table_dct_gen(q_list_dct)).cuda(),
-            CompressDWT(level=3, q_table=q_table_dwt, wave=wavelet).cuda()
-        ]
-        decoder_seq = [
-            CompressDWT(level=3, q_table=q_table_dwt, wave=wavelet, is_encoder=False).cuda(),
-            # CompressDCT(utils.q_table_dct_gen(q_list_dct), is_encoder=False).cuda(),
-            FtMapShiftNorm(is_encoder=False),
-            QuantiUnsign(bit=8, q_factor=q_factor, is_encoder=False, is_shift=False).cuda()
+            # CompressDCT(q_table=utils.q_table_dct_gen(q_list_dct)).cuda(),
+            CompressDWT(level=3, bit=bit, q_table=q_table_dwt, wave=wavelet).cuda()
         ]
 
-        encoder_list.append(BypassSequential(*encoder_seq))
-        decoder_list.append(BypassSequential(*decoder_seq, is_encoder=False))
+        compress_list.append(Compress(BypassSequential(*compress_seq)))
 
-    q_factor = maximum_fm[-1] / 255
+    q_factor = maximum_fm[-1] / (2 ** bit - 1)
     q_table_dwt = torch.tensor([10 ** 6, 10 ** 6, 10 ** 6, 1], dtype=torch.get_default_dtype())
-    # q_table_dwt = torch.tensor([0.1, 0.1, 0.1, 0.1], dtype=torch.get_default_dtype())
-    q_list_dct = [150, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6,
+    q_list_dct = [25, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6,
                   10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6]
 
     q_table_dwt = q_table_dwt * 255 / maximum_fm[-1]
 
-    encoder_seq = [
-        QuantiUnsign(bit=8, q_factor=q_factor).cuda(),
-        # CompressDCT(utils.q_table_dct_gen(q_list_dct)).cuda(),
-        CompressDWT(level=3, q_table=q_table_dwt, wave='haar').cuda()
-    ]
-    decoder_seq = [
-        CompressDWT(level=3, q_table=q_table_dwt, wave='haar', is_encoder=False).cuda(),
-        # CompressDCT(utils.q_table_dct_gen(q_list_dct), is_encoder=False).cuda(),
-        QuantiUnsign(bit=8, q_factor=q_factor, is_encoder=False).cuda()
+    compress_seq = [
+        QuantiUnsign(bit=bit, q_factor=q_factor).cuda(),
+        # CompressDCT(q_table=utils.q_table_dct_gen(q_list_dct)).cuda(),
+        CompressDWT(level=3, bit=bit, q_table=q_table_dwt, wave='haar').cuda()
     ]
 
-    encoder_list.append(BypassSequential(*encoder_seq))
-    decoder_list.append(BypassSequential(*decoder_seq, is_encoder=False))
+    compress_list.append(Compress(BypassSequential(*compress_seq)))
 
-    return encoder_list, decoder_list
+    return compress_list
 
 
 if __name__ == '__main__':

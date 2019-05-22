@@ -146,19 +146,46 @@ class CompressDWT(EncoderDecoderPair):
 
     def forward(self, x, is_encoder=True):
         if is_encoder:
-            assert len(x.size()) == 4, "Dimension of x need to be 4, which corresponds to (N, C, H, W)"
-            self.size = x.size()
-            XL, XH = self.DWT(x)
-            XL = XL / self.q_table[-1]
-            XL = random_round(XL, self.rand_factor)
-            XL = XL.clamp(-2 ** (self.bit - 1), 2 ** (self.bit - 1) - 1)
-            for i in range(self.level):
-                XH[i] = XH[i] / self.q_table[i]
-                XH[i] = random_round(XH[i], self.rand_factor)
-                XH[i] = XH[i].clamp(-2 ** (self.bit - 1), 2 ** (self.bit - 1) - 1)
+            if type(x) is tuple:
+                x_x_detach, x_w_detach = x
+                assert len(x_x_detach.size()) == 4, "Dimension of x need to be 4, which corresponds to (N, C, H, W)"
+                assert len(x_w_detach.size()) == 4, "Dimension of x need to be 4, which corresponds to (N, C, H, W)"
+                self.size = x_x_detach.size()
+                XL, XH = self.DWT(x_x_detach)
+                XL = XL / self.q_table[-1]
+                XL = random_round(XL, self.rand_factor)
+                XL = XL.clamp(-2 ** (self.bit - 1), 2 ** (self.bit - 1) - 1)
+                for i in range(self.level):
+                    XH[i] = XH[i] / self.q_table[i]
+                    XH[i] = random_round(XH[i], self.rand_factor)
+                    XH[i] = XH[i].clamp(-2 ** (self.bit - 1), 2 ** (self.bit - 1) - 1)
 
-            return XL, XH
+                x_x_detach = (XL, XH)
 
+                XL, XH = self.DWT(x_w_detach)
+                XL = XL / self.q_table[-1]
+                XL = random_round(XL, self.rand_factor)
+                XL = XL.clamp(-2 ** (self.bit - 1), 2 ** (self.bit - 1) - 1)
+                for i in range(self.level):
+                    XH[i] = XH[i] / self.q_table[i]
+                    XH[i] = random_round(XH[i], self.rand_factor)
+                    XH[i] = XH[i].clamp(-2 ** (self.bit - 1), 2 ** (self.bit - 1) - 1)
+
+                x_w_detach = (XL, XH)
+                return x_x_detach, x_w_detach
+            else:
+                assert len(x.size()) == 4, "Dimension of x need to be 4, which corresponds to (N, C, H, W)"
+                self.size = x.size()
+                XL, XH = self.DWT(x)
+                XL = XL / self.q_table[-1]
+                XL = random_round(XL, self.rand_factor)
+                XL = XL.clamp(-2 ** (self.bit - 1), 2 ** (self.bit - 1) - 1)
+                for i in range(self.level):
+                    XH[i] = XH[i] / self.q_table[i]
+                    XH[i] = random_round(XH[i], self.rand_factor)
+                    XH[i] = XH[i].clamp(-2 ** (self.bit - 1), 2 ** (self.bit - 1) - 1)
+
+                return XL, XH
         else:
             assert len(x) == 2, "Must be tuple include LL and Hs"
             XL, XH_org = x
@@ -283,12 +310,25 @@ class QuantiUnsign(EncoderDecoderPair):
 
     def forward(self, x, is_encoder=True):
         if is_encoder:
-            x /= self.q_factor
-            x = torch.round(x).detach() + x - x.detach()
-            x = x.clamp(0, 2 ** self.bit - 1)
-            if self.is_shift:
-                x = x - 2 ** (self.bit - 1)
-            return x
+            if type(x) is tuple:
+                x_x_detach, x_w_detach = x
+                x_x_detach /= self.q_factor
+                x_w_detach /= self.q_factor
+                x_x_detach = torch.round(x_x_detach).detach() + x_x_detach - x_x_detach.detach()
+                x_w_detach = torch.round(x_w_detach).detach() + x_w_detach - x_w_detach.detach()
+                x_x_detach = x_x_detach.clamp(0, 2 ** self.bit - 1)
+                x_w_detach = x_w_detach.clamp(0, 2 ** self.bit - 1)
+                if self.is_shift:
+                    x_x_detach = x_x_detach - 2 ** (self.bit - 1)
+                    x_w_detach = x_w_detach - 2 ** (self.bit - 1)
+                return x_x_detach, x_w_detach
+            else:
+                x /= self.q_factor
+                x = random_round(x)
+                x = x.clamp(0, 2 ** self.bit - 1)
+                if self.is_shift:
+                    x = x - 2 ** (self.bit - 1)
+                return x
         else:
             if self.is_shift:
                 x = x + 2 ** (self.bit - 1)
@@ -301,7 +341,7 @@ class FtMapShiftNorm(EncoderDecoderPair):
             Shift whole feature map with mean
         """
     is_bypass = True
-    bypass_indx = 1
+    bypass_indx = 1  # TODO clean up
 
     def __init__(self):
         super(FtMapShiftNorm, self).__init__()
@@ -313,11 +353,22 @@ class FtMapShiftNorm(EncoderDecoderPair):
                     For decoder: arg is both input and mean
             """
         if is_encoder:
-            x_mean = x
-            for i in range(1, len(x_mean.size())):
-                x_mean = x_mean.mean(i, keepdim=True)
-            x = x - x_mean
-            return x, x_mean
+            if type(x) is tuple:
+                x_x_detach, x_w_detach = x
+                x_x_detach_mean = x_x_detach
+                x_w_detach_mean = x_w_detach
+                for i in range(1, len(x_x_detach_mean.size())):
+                    x_x_detach_mean = x_x_detach_mean.mean(i, keepdim=True)
+                    x_w_detach_mean = x_w_detach_mean.mean(i, keepdim=True)
+                x_x_detach = x_x_detach - x_x_detach_mean
+                x_w_detach = x_w_detach - x_w_detach_mean
+                return x_x_detach, x_w_detach, x_w_detach_mean
+            else:
+                x_mean = x
+                for i in range(1, len(x_mean.size())):
+                    x_mean = x_mean.mean(i, keepdim=True)
+                x = x - x_mean
+                return x, x_mean
         else:
             x, x_mean = x
             x = x + x_mean
@@ -334,17 +385,17 @@ class Transform(EncoderDecoderPair):
         Args:
             channel_num (int): The input channel number
     """
-    def __init__(self, channel_num, init_value=None):
+    def __init__(self, channel_num, norm_mode='l1', init_value=None):
         super(Transform, self).__init__()
         self.transform_matrix = nn.Parameter(torch.Tensor(channel_num, channel_num))
         self.register_buffer('inverse_matrix', torch.Tensor(channel_num, channel_num))
+        self.norm_mode = norm_mode
 
-        # nn.init.kaiming_normal_(self.transform_matrix)
         if init_value is None:
             # nn.init.uniform_(self.transform_matrix, 0, 1)
+            # nn.init.kaiming_normal_(self.transform_matrix)
             # with torch.no_grad():
             #     self.transform_matrix /= self.transform_matrix.sum(dim=1)
-
             nn.init.eye_(self.transform_matrix)
         else:
             with torch.no_grad():
@@ -356,9 +407,18 @@ class Transform(EncoderDecoderPair):
         if is_encoder:
             weight = self.transform_matrix.unsqueeze(-1)
             weight = weight.unsqueeze(-1)
-            x_tr = F.conv2d(x, weight)
+            if self.norm_mode == 'sum':
+                weight_norm = weight / weight.sum(dim=1)  # sum
+            elif self.norm_mode == 'l1':
+                weight_norm = weight / weight.abs().sum(dim=1)  # L1
+            elif self.norm_mode == 'l2':
+                weight_norm = weight / (weight ** 2).sum(dim=1)  # L2
+            else:
+                weight_norm = weight
+            x_tr_detach_x = F.conv2d(x.detach(), weight_norm)
+            x_tr_detach_w = F.conv2d(x, weight_norm.detach())
 
-            return x_tr
+            return x_tr_detach_x, x_tr_detach_w
 
         else:
             weight = self.inverse_matrix.unsqueeze(-1)
@@ -371,7 +431,15 @@ class Transform(EncoderDecoderPair):
         """
         Call update after transform_matrix is modified (e.g. after optimizer updated).
         """
-        self.inverse_matrix.data = torch.pinverse(self.transform_matrix)
+        with torch.no_grad():
+            if self.norm_mode == 'sum':
+                self.transform_matrix.data /= self.transform_matrix.sum(dim=1)  # sum
+            elif self.norm_mode == 'l1':
+                self.transform_matrix.data /= self.transform_matrix.abs().sum(dim=1)  # L1
+            elif self.norm_mode == 'l2':
+                self.transform_matrix.data /= (self.transform_matrix ** 2).sum(dim=1)  # L2
+            # self.inverse_matrix.data = torch.pinverse(self.transform_matrix)
+            self.inverse_matrix.data = torch.inverse(self.transform_matrix)
 
 
 class DownSampleBranch(nn.Sequential):
@@ -476,9 +544,14 @@ class Compress(nn.Module):
 
     def forward(self, x):
         fm_transforms = self.compress(x, is_encoder=True)
-        x = self.compress(fm_transforms, is_encoder=False)
         fm_transforms, bypass_stack = fm_transforms  # TODO clean up
-        return x, fm_transforms
+        x_x_detach, x_w_detach = fm_transforms
+        if type(x_x_detach) is tuple:  # TODO clean up
+            x = self.compress((x_w_detach, bypass_stack), is_encoder=False)
+            return x, x_x_detach
+        else:
+            x = self.compress((fm_transforms, bypass_stack), is_encoder=False)
+            return x, fm_transforms
 
     def update(self):
         self.compress.update()

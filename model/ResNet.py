@@ -205,7 +205,6 @@ class ResNetStages(nn.Module):
                 else:
                     x, fm_transform = self.compress(x)
                     fm_transforms.append(self._to_cpu(fm_transform))
-
         return x, feature_maps, fm_transforms
 
 

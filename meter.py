@@ -41,6 +41,7 @@ class MaxMinMeter:
 
 class HistMeter:
     eps = 10 ** -4
+    # eps = 0.49999999999
 
     def __init__(self, codes=None):
         self.hist = {}

@@ -102,8 +102,8 @@ DCT及DWT的implementation。
 3. log params size
 4. 壓縮
 5. optimizer用SDG；criterion用crossEntropy；scheduler用MultiStepLR
-8. 開始train，forward接著backward後紀錄loss, prec1, prec5
-9. 對每個epoch：
+6. 開始train，forward接著backward後紀錄loss, prec1, prec5
+7. 對每個epoch：
     * 印當前#epoch跟learning rate
     * 丟進train()
     * train夠久後(超過epochs_test)開始要丟進infer測

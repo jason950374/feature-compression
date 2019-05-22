@@ -1,5 +1,6 @@
 import numpy as np
 import torch.cuda
+import torch.nn
 import torch.optim
 import glob
 
@@ -43,7 +44,7 @@ parser.add_argument('--bit', type=int, default=8, help="coefficient of L1 regula
 
 args = parser.parse_args()
 # args.save = 'ckpts/retrain_{}_{}'.format(args.wavelet, args.load[6:-9])
-args.save = 'ckpts/retrain_dif_wavelet_{}'.format(args.wavelet)
+args.save = 'ckpts/retrain_wavelet_{}_relinkBP_no_transform'.format(args.wavelet)
 args.learning_rate = args.learning_rate * args.batch_size / 256
 
 
@@ -134,7 +135,15 @@ def main():
     utils.save_checkpoint(model, False, args.save, 0)
 
     # Set the optimizer
+    settings = [{'setting_names': utils.get_param_names(model, 'transform_matrix'),
+                 'lr': args.learning_rate,
+                 'weight_decay': 0,
+                 'momentum': 0
+                 }]
+    params = utils.optimizer_setting_separator(model, settings)
+
     optimizer = torch.optim.SGD(
+        # params,
         model.parameters(),
         lr=args.learning_rate,
         momentum=args.momentum,
@@ -155,12 +164,13 @@ def main():
         milestones = None
 
     scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=milestones)
+    length_code_dict = utils.gen_signed_seg_dict(args.k, 2 ** (args.bit-1), len_key=True)
 
     for epoch in range(0, args.epochs):
         scheduler.step()
         logging.info('[Train] Epoch = %d , LR = %e', epoch, scheduler.get_lr()[0])
         is_best = False
-        train(train_queue, model, criterion, optimizer, epoch, args,)
+        train(train_queue, model, criterion, optimizer, epoch, args, length_code_dict)
 
         # Evaluate the test accuracy
         if epoch > args.epochs_test:
@@ -178,19 +188,20 @@ def main():
             utils.save_checkpoint(model, is_best, args.save, epoch)
             logging.info('============================================================================')
 
-        '''
-        if (epoch % 4) == 3 and (epoch < milestones[0]) or (epoch % 8) == 7 and (epoch < milestones[1]):
-            for m in model.modules():
-                if isinstance(m, CompressDWT):
-                    with torch.no_grad():
-                        m.q_table.data *= 1.05'''
 
-
-def train(train_queue, model, criterion, optimizer, cur_epoch, args, warm_up=False):
+def train(train_queue, model, criterion, optimizer, cur_epoch, args, length_code_dict, warm_up=False):
     objs = meter.AverageMeter()
     top1 = meter.AverageMeter()
     top5 = meter.AverageMeter()
     model.train(True)
+    for module in model.modules():
+        if isinstance(module, torch.nn.modules.BatchNorm1d):
+            module.eval()
+        if isinstance(module, torch.nn.modules.BatchNorm2d):
+            module.eval()
+        if isinstance(module, torch.nn.modules.BatchNorm3d):
+            module.eval()
+
     total_step = len(train_queue)
 
     end = time.time()
@@ -209,8 +220,8 @@ def train(train_queue, model, criterion, optimizer, cur_epoch, args, warm_up=Fal
 
         loss = criterion(logits, target)
         if args.l1_coe > 1e-20:
-            l1 = utils.iterable_l1(fm_transforms)
-            loss += (l1 * args.l1_coe)
+            l1 = utils.iterable_weighted_l1(fm_transforms, length_code_dict)
+            loss += l1 * args.l1_coe
 
         optimizer.zero_grad()
         loss.backward()
@@ -259,18 +270,19 @@ def infer(test_queue, model):
 # TODO put into utils?
 def compress_list_gen(maximum_fm, wavelet='db1', bit=8):
     compress_list = []
-    # channel = [16, 16, 16, 32, 32, 32, 64, 64, 64]
+    channel = [16, 16, 16, 32, 32, 32, 64, 64, 64]
     for i in range(len(maximum_fm) - 1):
         q_factor = maximum_fm[i] / (2 ** bit - 1)
 
-        q_table_dwt = torch.tensor([0.1, 0.2, 0.3, 0.4], dtype=torch.get_default_dtype())
+        q_table_dwt = torch.tensor([0.1, 0.1, 0.1, 0.1], dtype=torch.get_default_dtype())
+        # q_table_dwt = torch.tensor([0.1, 0.2, 0.3, 0.4], dtype=torch.get_default_dtype())
         q_list_dct = [25, 25, 25, 25, 25, 25, 25, 25,
                       25, 25, 25, 25, 25, 25, 25]
 
         q_table_dwt = q_table_dwt * 255 / maximum_fm[i]
 
         compress_seq = [
-            # Transform(channel[i], init_value=q_factor).cuda(),
+            # Transform(channel[i]).cuda(),
             QuantiUnsign(bit=bit, q_factor=q_factor, is_shift=False).cuda(),
             FtMapShiftNorm(),
             # CompressDCT(q_table=utils.q_table_dct_gen(q_list_dct)).cuda(),

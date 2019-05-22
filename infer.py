@@ -103,12 +103,13 @@ def main():
         raise NotImplementedError(
             '{} dataset is not supported. Only support cifar10, cifar100 and imageNet.'.format(args.dataset))
 
+    '''
     if args.dataset == 'imageNet':
         net_dic = torch.load(args.load)
         net_dic_fix = utils.imagenet_model_graph_mapping(net_dic, [2, 2, 2, 2])
         model.load_state_dict(net_dic_fix)
     else:
-        utils.load(model, args)
+        utils.load(model, args)'''
 
     # Insert compress_block after load since compress_block not include in training phase in this case
     # hd_maximum_fm = infer_result_handler.HandlerFm(print_fn=logging.info, print_sparsity=False)
@@ -124,18 +125,21 @@ def main():
     compress_list = compress_list_gen(maximum_fm, args.wavelet, args.bit)
 
     model.compress_replace(compress_list)
+    utils.load(model, args)
+    model.update()
+
     logging.info("param size = %fMB", utils.count_parameters_in_MB(model))
 
     code_length_dict = utils.gen_signed_seg_dict(args.k, 2 ** (args.bit-1))
     u_code_length_dict = utils.gen_seg_dict(args.k, 2 ** args.bit)
     acc_hd = infer_result_handler.HandlerAcc(print_fn=logging.info)
-    # fm_hd = infer_result_handler.HandlerFm(print_fn=logging.info)
+    fm_hd = infer_result_handler.HandlerFm(print_fn=logging.info)
     # tr_hd = infer_result_handler.HandlerDCT_Fm(print_fn=logging.info, save=args.save, code_length_dict=code_length_dict)
     # tr_hd = infer_result_handler.HandlerDWT_Fm(print_fn=logging.info, save=args.save, code_length_dict=code_length_dict)
     tr_hd = infer_result_handler.HandlerDWT_Fm(print_fn=logging.info, save=args.save, code_length_dict=code_length_dict)
     # tr_hd = infer_result_handler.HandlerQuanti(print_fn=logging.info, code_length_dict=u_code_length_dict)
     # tr_hd = infer_result_handler.HandlerTrans(print_fn=logging.info)
-    handler_list = [tr_hd, acc_hd]
+    handler_list = [fm_hd, tr_hd, acc_hd]
 
     utils.infer_base(test_queue, model, handler_list)
 
@@ -159,8 +163,8 @@ def compress_list_gen(maximum_fm, wavelet='db1', bit=8):
     for i in range(len(maximum_fm) - 1):
         q_factor = maximum_fm[i] / (2 ** bit - 1)
 
-        # q_table_dwt = torch.tensor([0.1, 0.1, 0.1, 0.1], dtype=torch.get_default_dtype())
-        q_table_dwt = torch.tensor([0.1, 0.1], dtype=torch.get_default_dtype())
+        q_table_dwt = torch.tensor([0.1, 0.1, 0.1, 0.1], dtype=torch.get_default_dtype())
+        # q_table_dwt = torch.tensor([0.1, 0.2, 0.3, 0.4], dtype=torch.get_default_dtype())
         q_list_dct = [25, 25, 25, 25, 25, 25, 25, 25,
                       25, 25, 25, 25, 25, 25, 25]
 
@@ -168,11 +172,11 @@ def compress_list_gen(maximum_fm, wavelet='db1', bit=8):
 
         compress_seq = [
             # Transform(channel[i], init_value=U.t() if i < 3 else None).cuda(),
-            # Transform(channel[i]).cuda(),
+            Transform(channel[i]).cuda(),
             QuantiUnsign(bit=bit, q_factor=q_factor, is_shift=False).cuda(),
             FtMapShiftNorm(),
             # CompressDCT(q_table=utils.q_table_dct_gen(q_list_dct)).cuda(),
-            CompressDWT(level=1, bit=bit, q_table=q_table_dwt, wave=wavelet).cuda()
+            CompressDWT(level=3, bit=bit, q_table=q_table_dwt, wave=wavelet).cuda()
             # AdaptiveDWT(x_size[i], level=1, bit=bit, q_table=q_table_dwt).cuda()
         ]
 

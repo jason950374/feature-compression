@@ -430,5 +430,67 @@ def iterable_l1(x):
         return l2
 
 
+def iterable_weighted_l1(x, length_code_dict):
+    if isinstance(x, torch.Tensor):
+        l1 = 0
+        key_gap = 2
+        for key in length_code_dict.keys():
+            if key > 1 + key_gap:
+                code_min = min(length_code_dict[key - key_gap])
+                set_size = len(length_code_dict[key])  # number of element in set of code in same code length
+                pos = (x + code_min) / set_size * 2 * key_gap
+                neg = (-x + code_min) / set_size * 2 * key_gap
+
+                l1 = l1 + torch.clamp(torch.max(pos, neg), min=0, max=key_gap)
+
+    elif isinstance(x, Iterable):
+        l1 = 0
+        for x_e in x:
+            l1 += iterable_l1(x_e)
+        return l1
+
+
+def get_param_names(model, name_tail):
+    names = []
+    for name, _ in model.named_parameters():
+        if name[-len(name_tail):] == name_tail:
+            names.append(name)
+    return names
+
+
+def get_params(model, name_tail):
+    params = []
+    for name, param in model.named_parameters():
+        if name[-len(name_tail):] == name_tail:
+            params.append(param)
+    return params
+
+
+def optimizer_setting_separator(model, settings):
+    params = [{}]
+    for setting in settings:
+        temp = setting.copy()
+        temp.pop('setting_names')
+        params.append(temp)
+
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue  # frozen weights
+        default = True
+        for indx, setting in enumerate(settings):
+            if name in setting['setting_names']:
+                if 'params' in params[indx + 1].keys():
+                    params[indx + 1]['params'].append(param)
+                else:
+                    params[indx + 1]['params'] = [param]
+                default = False
+        if default:
+            if 'params' in params[0].keys():
+                params[0]['params'].append(param)
+            else:
+                params[0]['params'] = [param]
+    return params
+
+
 if __name__ == '__main__':
     pass

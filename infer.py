@@ -159,8 +159,7 @@ def compress_list_gen(maximum_fm, wavelet='db1', bit=8):
     for i in range(len(maximum_fm) - 1):
         q_factor = maximum_fm[i] / (2 ** bit - 1)
 
-        # q_table_dwt = torch.tensor([0.1, 0.1, 0.1, 0.1], dtype=torch.get_default_dtype())
-        q_table_dwt = torch.tensor([0.1, 0.1], dtype=torch.get_default_dtype())
+        q_table_dwt = torch.tensor([0.1, 0.1, 0.1, 0.1], dtype=torch.get_default_dtype())
         q_list_dct = [25, 25, 25, 25, 25, 25, 25, 25,
                       25, 25, 25, 25, 25, 25, 25]
 
@@ -172,7 +171,7 @@ def compress_list_gen(maximum_fm, wavelet='db1', bit=8):
             QuantiUnsign(bit=bit, q_factor=q_factor, is_shift=False).cuda(),
             FtMapShiftNorm(),
             # CompressDCT(q_table=utils.q_table_dct_gen(q_list_dct)).cuda(),
-            CompressDWT(level=1, bit=bit, q_table=q_table_dwt, wave=wavelet).cuda()
+            CompressDWT(level=3, bit=bit, q_table=q_table_dwt, wave=wavelet).cuda()
             # AdaptiveDWT(x_size[i], level=1, bit=bit, q_table=q_table_dwt).cuda()
         ]
 

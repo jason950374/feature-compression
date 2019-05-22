@@ -284,7 +284,7 @@ class QuantiUnsign(EncoderDecoderPair):
     def forward(self, x, is_encoder=True):
         if is_encoder:
             x /= self.q_factor
-            x = torch.round(x).detach() + x - x.detach()
+            x = random_round(x)
             x = x.clamp(0, 2 ** self.bit - 1)
             if self.is_shift:
                 x = x - 2 ** (self.bit - 1)
@@ -334,14 +334,15 @@ class Transform(EncoderDecoderPair):
         Args:
             channel_num (int): The input channel number
     """
-    def __init__(self, channel_num, init_value=None):
+    def __init__(self, channel_num, norm_mode='l1', init_value=None):
         super(Transform, self).__init__()
         self.transform_matrix = nn.Parameter(torch.Tensor(channel_num, channel_num))
         self.register_buffer('inverse_matrix', torch.Tensor(channel_num, channel_num))
+        self.norm_mode = norm_mode
 
-        # nn.init.kaiming_normal_(self.transform_matrix)
         if init_value is None:
             # nn.init.uniform_(self.transform_matrix, 0, 1)
+            # nn.init.kaiming_normal_(self.transform_matrix)
             # with torch.no_grad():
             #     self.transform_matrix /= self.transform_matrix.sum(dim=1)
 
@@ -356,7 +357,15 @@ class Transform(EncoderDecoderPair):
         if is_encoder:
             weight = self.transform_matrix.unsqueeze(-1)
             weight = weight.unsqueeze(-1)
-            x_tr = F.conv2d(x, weight)
+            if self.norm_mode == 'sum':
+                weight_norm = weight / weight.sum(dim=1)  # sum
+            elif self.norm_mode == 'l1':
+                weight_norm = weight / weight.abs().sum(dim=1)  # L1
+            elif self.norm_mode == 'l2':
+                weight_norm = weight / (weight ** 2).sum(dim=1)  # L2
+            else:
+                weight_norm = weight
+            x_tr = F.conv2d(x, weight_norm.detach())
 
             return x_tr
 
@@ -371,7 +380,15 @@ class Transform(EncoderDecoderPair):
         """
         Call update after transform_matrix is modified (e.g. after optimizer updated).
         """
-        self.inverse_matrix.data = torch.pinverse(self.transform_matrix)
+        with torch.no_grad():
+            if self.norm_mode == 'sum':
+                self.transform_matrix.data /= self.transform_matrix.sum(dim=1)  # sum
+            elif self.norm_mode == 'l1':
+                self.transform_matrix.data /= self.transform_matrix.abs().sum(dim=1)  # L1
+            elif self.norm_mode == 'l2':
+                self.transform_matrix.data /= (self.transform_matrix ** 2).sum(dim=1)  # L2
+            # self.inverse_matrix.data = torch.pinverse(self.transform_matrix)
+        self.inverse_matrix.data = torch.inverse(self.transform_matrix)
 
 
 class DownSampleBranch(nn.Sequential):

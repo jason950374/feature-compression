@@ -365,7 +365,7 @@ class Transform(EncoderDecoderPair):
                 weight_norm = weight / (weight ** 2).sum(dim=1)  # L2
             else:
                 weight_norm = weight
-            x_tr = F.conv2d(x, weight_norm.detach())
+            x_tr = F.conv2d(x, weight_norm)
 
             return x_tr
 

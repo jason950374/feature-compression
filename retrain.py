@@ -2,7 +2,6 @@ import numpy as np
 import torch.cuda
 import torch.optim
 import glob
-
 import meter
 import utils
 import argparse
@@ -40,10 +39,11 @@ parser.add_argument('--wavelet', type=str, default="db1", help='Mother wavelet f
 parser.add_argument('--k', type=int, default=0, help="k for exponential-Golomb")
 parser.add_argument('--l1_coe', type=float, default=0, help="coefficient of L1 regularizer for sparsity")
 parser.add_argument('--bit', type=int, default=8, help="coefficient of L1 regularizer for sparsity")
+parser.add_argument('--norm_mode', type=str, default='l1', help="coefficient of L1 regularizer for sparsity")
 
 args = parser.parse_args()
 # args.save = 'ckpts/retrain_{}_{}'.format(args.wavelet, args.load[6:-9])
-args.save = 'ckpts/retrain_debug_detach_trMatrix'.format()
+args.save = 'ckpts/retrain_spL1_{}_norm_mode_{}'.format(args.l1_coe, args.norm_mode)
 args.learning_rate = args.learning_rate * args.batch_size / 256
 
 
@@ -217,7 +217,7 @@ def train(train_queue, model, criterion, optimizer, cur_epoch, args, length_code
 
         loss = criterion(logits, target)
         if args.l1_coe > 1e-20:
-            l1 = utils.iterable_weighted_l1(fm_transforms, length_code_dict)
+            l1 = utils.iterable_l1(fm_transforms)
             loss += (l1 * args.l1_coe)
         optimizer.zero_grad()
         loss.backward()
@@ -277,7 +277,7 @@ def compress_list_gen(maximum_fm, wavelet='db1', bit=8):
         q_table_dwt = q_table_dwt * 255 / maximum_fm[i]
 
         compress_seq = [
-            Transform(channel[i]).cuda(),
+            Transform(channel[i], norm_mode=args.norm_mode).cuda(),
             QuantiUnsign(bit=bit, q_factor=q_factor, is_shift=False).cuda(),
             FtMapShiftNorm(),
             # CompressDCT(q_table=utils.q_table_dct_gen(q_list_dct)).cuda(),

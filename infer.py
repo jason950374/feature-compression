@@ -33,6 +33,7 @@ parser.add_argument('--load', type=str, default="")
 parser.add_argument('--wavelet', type=str, default="db1", help='Mother wavelet for DWT')
 parser.add_argument('--k', type=int, default=1, help="k for exponential-Golomb")
 parser.add_argument('--bit', type=int, default=8, help="coefficient of L1 regularizer for sparsity")
+parser.add_argument('--norm_mode', type=str, default='l1', help="coefficient of L1 regularizer for sparsity")
 
 args = parser.parse_args()
 args.save = 'ckpts/test_{}_resnet{}_{}_k{}_{}'.format(args.dataset, args.depth,
@@ -103,12 +104,13 @@ def main():
         raise NotImplementedError(
             '{} dataset is not supported. Only support cifar10, cifar100 and imageNet.'.format(args.dataset))
 
+    '''
     if args.dataset == 'imageNet':
         net_dic = torch.load(args.load)
         net_dic_fix = utils.imagenet_model_graph_mapping(net_dic, [2, 2, 2, 2])
         model.load_state_dict(net_dic_fix)
     else:
-        utils.load(model, args)
+        utils.load(model, args)'''
 
     # Insert compress_block after load since compress_block not include in training phase in this case
     # hd_maximum_fm = infer_result_handler.HandlerFm(print_fn=logging.info, print_sparsity=False)
@@ -124,31 +126,33 @@ def main():
     compress_list = compress_list_gen(maximum_fm, args.wavelet, args.bit)
 
     model.compress_replace(compress_list)
+    utils.load(model, args)
+    model.update()
+
     logging.info("param size = %fMB", utils.count_parameters_in_MB(model))
 
     code_length_dict = utils.gen_signed_seg_dict(args.k, 2 ** (args.bit-1))
     u_code_length_dict = utils.gen_seg_dict(args.k, 2 ** args.bit)
     acc_hd = infer_result_handler.HandlerAcc(print_fn=logging.info)
-    # fm_hd = infer_result_handler.HandlerFm(print_fn=logging.info)
+    fm_hd = infer_result_handler.HandlerFm(print_fn=logging.info)
     # tr_hd = infer_result_handler.HandlerDCT_Fm(print_fn=logging.info, save=args.save, code_length_dict=code_length_dict)
     # tr_hd = infer_result_handler.HandlerDWT_Fm(print_fn=logging.info, save=args.save, code_length_dict=code_length_dict)
     tr_hd = infer_result_handler.HandlerDWT_Fm(print_fn=logging.info, save=args.save, code_length_dict=code_length_dict)
     # tr_hd = infer_result_handler.HandlerQuanti(print_fn=logging.info, code_length_dict=u_code_length_dict)
     # tr_hd = infer_result_handler.HandlerTrans(print_fn=logging.info)
-    handler_list = [tr_hd, acc_hd]
+    handler_list = [fm_hd, tr_hd, acc_hd]
 
     utils.infer_base(test_queue, model, handler_list)
 
     for handler in handler_list:
         handler.print_result()
 
-    """
     for k in range(1, 5):
         logging.info("===========   {}   ===========".format(k))
         code_length_dict = utils.gen_signed_seg_dict(k, 2 ** (args.bit-1))
         # u_code_length_dict = utils.gen_seg_dict(k, 256)
         tr_hd.set_config(code_length_dict)
-        tr_hd.print_result()"""
+        tr_hd.print_result()
 
 
 def compress_list_gen(maximum_fm, wavelet='db1', bit=8):
@@ -166,8 +170,7 @@ def compress_list_gen(maximum_fm, wavelet='db1', bit=8):
         q_table_dwt = q_table_dwt * 255 / maximum_fm[i]
 
         compress_seq = [
-            # Transform(channel[i], init_value=U.t() if i < 3 else None).cuda(),
-            # Transform(channel[i]).cuda(),
+            Transform(channel[i], norm_mode=args.norm_mode).cuda(),
             QuantiUnsign(bit=bit, q_factor=q_factor, is_shift=False).cuda(),
             FtMapShiftNorm(),
             # CompressDCT(q_table=utils.q_table_dct_gen(q_list_dct)).cuda(),

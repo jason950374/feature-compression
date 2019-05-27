@@ -200,11 +200,12 @@ class ResNetStages(nn.Module):
             feature_maps.append(x.cpu())
             if self.compress is not None:
                 if type(self.compress) is list or type(self.compress) is tuple:
-                    x, fm_transform = self.compress[indx](x)
+                    x_re, fm_transform = self.compress[indx](x.detach())  # TODO generalized detach place?
                     fm_transforms.append(self._to_cpu(fm_transform))
                 else:
-                    x, fm_transform = self.compress(x)
+                    x_re, fm_transform = self.compress(x.detach())
                     fm_transforms.append(self._to_cpu(fm_transform))
+                x = x_re.detach() + x - x.detach()  # TODO generalized detach place?
 
         return x, feature_maps, fm_transforms
 

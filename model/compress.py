@@ -21,14 +21,25 @@ def random_round(x, rand_factor=0.):
     return x.detach() + x_org - x_org.detach()
 
 
+def softmin_round(x, min_int, max_int, tau=1):
+    int_set = torch.arange(min_int, max_int, step=1.)
+    in_device = x.get_device()
+    if in_device >= 0:  # On gpu
+        int_set = int_set.to(in_device)
+    x_repeat = x.unsqueeze(-1)
+    x_repeat = x_repeat.repeat_interleave(int_set.size(0), dim=-1)
+    distant = (x_repeat - int_set).abs() * tau
+    weight = F.softmin(distant, dim=-1)
+    return (weight * int_set).sum(-1)
+
+
 class EncoderDecoderPair(nn.Module):
     is_bypass = False
-    bypass_indx = 1
 
     def __init__(self):
         super(EncoderDecoderPair, self).__init__()
 
-    def forward(self, *inputs):
+    def forward(self, x, is_encoder=True):
         raise NotImplementedError
 
     def update(self):
@@ -63,20 +74,20 @@ class CompressDCT(EncoderDecoderPair):
             fm_transform = torch.zeros_like(x)
             for i_h in range(H // 8):
                 for i_w in range(W // 8):
-                    X = my_f.dct_2d(x[..., 8*i_h:8*(i_h+1), 8*i_w:8*(i_w+1)])
-                    X = torch.round((X / q_table))
-                    X = X.clamp(-2 ** (self.bit - 1), 2 ** (self.bit-1) - 1)
-                    fm_transform[..., 8 * i_h:8 * (i_h + 1), 8 * i_w:8 * (i_w + 1)] = X
+                    x_dct = my_f.dct_2d(x[..., 8*i_h:8*(i_h+1), 8*i_w:8*(i_w+1)])
+                    x_dct = torch.round((x_dct / q_table))
+                    x_dct = x_dct.clamp(-2 ** (self.bit - 1), 2 ** (self.bit-1) - 1)
+                    fm_transform[..., 8 * i_h:8 * (i_h + 1), 8 * i_w:8 * (i_w + 1)] = x_dct
 
                 if r_w != 0:
                     q_table_w = q_table[..., :r_w]
                     for i in range(r_w):
                         q_table_w[..., i] = q_table[..., i * 8 // r_w]
 
-                    X = my_f.dct_2d(x[..., 8*i_h:8*(i_h+1), -r_w:])
-                    X = torch.round((X / q_table_w))
-                    X = X.clamp(-2 ** (self.bit - 1), 2 ** (self.bit-1) - 1)
-                    fm_transform[..., 8 * i_h:8 * (i_h + 1), -r_w:] = X
+                    x_dct = my_f.dct_2d(x[..., 8*i_h:8*(i_h+1), -r_w:])
+                    x_dct = torch.round((x_dct / q_table_w))
+                    x_dct = x_dct.clamp(-2 ** (self.bit - 1), 2 ** (self.bit-1) - 1)
+                    fm_transform[..., 8 * i_h:8 * (i_h + 1), -r_w:] = x_dct
 
             if r_h != 0:
                 for i_w in range(W // 8):
@@ -84,52 +95,52 @@ class CompressDCT(EncoderDecoderPair):
                     for i in range(r_h):
                         q_table_h[..., i, :] = q_table[..., i * 8 // r_h, :]
 
-                    X = my_f.dct_2d(x[..., -r_h:, 8 * i_w:8 * (i_w + 1)])
-                    X = torch.round((X / q_table_h))
-                    X = X.clamp(-2 ** (self.bit - 1), 2 ** (self.bit-1) - 1)
-                    fm_transform[..., -r_h:, 8 * i_w:8 * (i_w + 1)] = X
+                    x_dct = my_f.dct_2d(x[..., -r_h:, 8 * i_w:8 * (i_w + 1)])
+                    x_dct = torch.round((x_dct / q_table_h))
+                    x_dct = x_dct.clamp(-2 ** (self.bit - 1), 2 ** (self.bit-1) - 1)
+                    fm_transform[..., -r_h:, 8 * i_w:8 * (i_w + 1)] = x_dct
                 if r_w != 0:
                     q_table_h_w = q_table[..., :r_h, :r_w]
                     for i in range(r_h):
                         for j in range(r_w):
                             q_table_h_w[..., i, j] = q_table[..., i * 8 // r_h, j * 8 // r_w]
 
-                    X = my_f.dct_2d(x[..., -r_h:, -r_w:])
-                    X = torch.round((X / q_table_h_w))
-                    X = X.clamp(-2 ** (self.bit - 1), 2 ** (self.bit-1) - 1)
-                    fm_transform[..., -r_h:, -r_w:] = X
+                    x_dct = my_f.dct_2d(x[..., -r_h:, -r_w:])
+                    x_dct = torch.round((x_dct / q_table_h_w))
+                    x_dct = x_dct.clamp(-2 ** (self.bit - 1), 2 ** (self.bit-1) - 1)
+                    fm_transform[..., -r_h:, -r_w:] = x_dct
             return fm_transform
         else:
             fm_transform = x
             x = torch.ones_like(x)
             for i_h in range(H // 8):
                 for i_w in range(W // 8):
-                    X = fm_transform[..., 8 * i_h:8 * (i_h + 1), 8 * i_w:8 * (i_w + 1)]
-                    x[..., 8 * i_h:8 * (i_h + 1), 8 * i_w:8 * (i_w + 1)] = my_f.idct_2d(X * q_table)
+                    x_dct = fm_transform[..., 8 * i_h:8 * (i_h + 1), 8 * i_w:8 * (i_w + 1)]
+                    x[..., 8 * i_h:8 * (i_h + 1), 8 * i_w:8 * (i_w + 1)] = my_f.idct_2d(x_dct * q_table)
 
                 if r_w != 0:
-                    X = fm_transform[..., 8 * i_h:8 * (i_h + 1), -r_w:]
-                    x[..., 8 * i_h:8 * (i_h + 1), -r_w:] = my_f.idct_2d(X * q_table[..., -r_w:])
+                    x_dct = fm_transform[..., 8 * i_h:8 * (i_h + 1), -r_w:]
+                    x[..., 8 * i_h:8 * (i_h + 1), -r_w:] = my_f.idct_2d(x_dct * q_table[..., -r_w:])
 
             if r_h != 0:
                 for i_w in range(W // 8):
-                    X = fm_transform[..., -r_h:, 8 * i_w:8 * (i_w + 1)]
-                    x[..., -r_h:, 8 * i_w:8 * (i_w + 1)] = my_f.idct_2d(X * q_table[..., -r_h:, :])
+                    x_dct = fm_transform[..., -r_h:, 8 * i_w:8 * (i_w + 1)]
+                    x[..., -r_h:, 8 * i_w:8 * (i_w + 1)] = my_f.idct_2d(x_dct * q_table[..., -r_h:, :])
                 if r_w != 0:
-                    X = fm_transform[..., -r_h:, -r_w:]
-                    x[..., -r_h:, -r_w:] = my_f.idct_2d(X * q_table[..., -r_h:, -r_w:])
+                    x_dct = fm_transform[..., -r_h:, -r_w:]
+                    x[..., -r_h:, -r_w:] = my_f.idct_2d(x_dct * q_table[..., -r_h:, -r_w:])
             return x
 
 
 class CompressDWT(EncoderDecoderPair):
     """
-            Compress with DWT and Q table
-            Args:
-                    level (int): Level of DWT
-                    bit (int): Bits after quantization
-                    q_table (list, tuple): Quantization table, scale is fine to coarse
-                    wave (str, pywt.Wavelet, tuple or list): Mother wavelet
-        """
+    Compress with DWT and Q table
+    Args:
+            level (int): Level of DWT
+            bit (int): Bits after quantization
+            q_table (list, tuple): Quantization table, scale is fine to coarse
+            wave (str, pywt.Wavelet, tuple or list): Mother wavelet
+    """
     def __init__(self, level=1, bit=8, q_table=None, wave='haar', rand_factor=0.):
         super(CompressDWT, self).__init__()
         self.bit = bit
@@ -148,39 +159,39 @@ class CompressDWT(EncoderDecoderPair):
         if is_encoder:
             assert len(x.size()) == 4, "Dimension of x need to be 4, which corresponds to (N, C, H, W)"
             self.size = x.size()
-            XL, XH = self.DWT(x)
-            XL = XL / self.q_table[-1]
-            XL = random_round(XL, self.rand_factor)
-            XL = XL.clamp(-2 ** (self.bit - 1), 2 ** (self.bit - 1) - 1)
+            ll, xh = self.DWT(x)
+            ll = ll / self.q_table[-1]
+            ll = random_round(ll, self.rand_factor)
+            ll = ll.clamp(-2 ** (self.bit - 1), 2 ** (self.bit - 1) - 1)
             for i in range(self.level):
-                XH[i] = XH[i] / self.q_table[i]
-                XH[i] = random_round(XH[i], self.rand_factor)
-                XH[i] = XH[i].clamp(-2 ** (self.bit - 1), 2 ** (self.bit - 1) - 1)
+                xh[i] = xh[i] / self.q_table[i]
+                xh[i] = random_round(xh[i], self.rand_factor)
+                xh[i] = xh[i].clamp(-2 ** (self.bit - 1), 2 ** (self.bit - 1) - 1)
 
-            return XL, XH
+            return ll, xh
 
         else:
             assert len(x) == 2, "Must be tuple include LL and Hs"
-            XL, XH_org = x
-            XL = XL * self.q_table[-1]
-            XH = []
+            ll, xh_org = x
+            ll = ll * self.q_table[-1]
+            xh = []
             for i in range(self.level):
-                XH.append(XH_org[i] * self.q_table[i])
+                xh.append(xh_org[i] * self.q_table[i])
 
-            x = self.IDWT((XL, XH), self.size)
+            x = self.IDWT((ll, xh), self.size)
 
             return x
 
 
 class AdaptiveDWT(EncoderDecoderPair):
+    r"""
+    Compress with DWT and Q table
+    The wave will select adaptively
+    Args:
+        level (int): Level of DWT
+        bit (int): Bits after quantization
+        q_table (list, tuple): Quantization table, scale is fine to coarse
     """
-                Compress with DWT and Q table
-                The wave will select adaptively
-                Args:
-                        level (int): Level of DWT
-                        bit (int): Bits after quantization
-                        q_table (list, tuple): Quantization table, scale is fine to coarse
-            """
 
     def __init__(self, x_size, level=1, bit=8, q_table=None, rand_factor=0.):
         super(AdaptiveDWT, self).__init__()
@@ -266,15 +277,86 @@ class AdaptiveDWT(EncoderDecoderPair):
             return ll
 
 
-class QuantiUnsign(EncoderDecoderPair):
-    """
-                Quantization with scaling factor and bit of unsigned integer
+class MaskCompressDWT(EncoderDecoderPair):
+    def __init__(self, kwargs_dwt, channel_num, is_adaptive=False, tau=1):
+        super(MaskCompressDWT, self).__init__()
+        self.compressDWT = AdaptiveDWT(**kwargs_dwt) if is_adaptive else CompressDWT(**kwargs_dwt)
+        self.tau = tau
+        self.freq_select = nn.Parameter(torch.ones(channel_num))
+        # self.freq_select = nn.Parameter(torch.cat([torch.ones(channel_num // 2),
+        #                                            torch.zeros(channel_num // 2)]))
+        self.norm = channel_num / 2
 
-                Args:
-                    bit (int): Bits of integer after quantization
-                    q_factor (float): scale factor to match the range  after quantization
-                    is_shift (bool): Shift range of value from unsigned to symmetric signed
-            """
+    def forward(self, x, is_encoder=True):
+        if is_encoder:
+            x = self.compressDWT(x, is_encoder=True)
+            '''
+            ll, h_list = x_dwt
+
+            # masking
+            freq_select_clamp = self.freq_select.clamp(0, 1)
+            freq_select_norm = (freq_select_clamp / freq_select_clamp.sum()) * self.norm
+
+            freq_select_norm = freq_select_norm.unsqueeze(dim=-1)
+            freq_select_norm = freq_select_norm.unsqueeze(dim=-1)
+            freq_select_norm = freq_select_norm.unsqueeze(dim=-1)
+
+            h_hard = h_list[0] * (1 - torch.round(freq_select_norm))
+            if self.training:
+                # h_hard = h_list[0] * (1 - random_round(freq_select_norm, rand_factor=self.rand_factor))
+                # x = [h_hard.detach() + h0 - h0.detach()]
+                h0 = h_list[0] * (1 - softmin_round(freq_select_norm, 0, 2))
+                h = [h_hard.detach() + h0 - h0.detach()]
+            else:
+                h = [h_hard]
+
+            for xh in h_list[1:]:
+                h.append(xh)'''
+
+            return x
+        else:
+            ll, h_list = x
+
+            # masking
+            freq_select_clamp = self.freq_select.clamp(0, 1)
+            freq_select_norm = (freq_select_clamp / freq_select_clamp.sum()) * self.norm
+
+            freq_select_norm = freq_select_norm.unsqueeze(dim=-1)
+            freq_select_norm = freq_select_norm.unsqueeze(dim=-1)
+            freq_select_norm = freq_select_norm.unsqueeze(dim=-1)
+
+            h_hard = h_list[0] * (1 - torch.round(freq_select_norm))
+            if self.training:
+                # h_hard = h_list[0] * (1 - random_round(freq_select_norm, rand_factor=self.rand_factor))
+                # x = [h_hard.detach() + h0 - h0.detach()]
+                h0 = h_list[0] * (1 - softmin_round(freq_select_norm, 0, 2))
+                h = [h_hard.detach() + h0 - h0.detach()]
+            else:
+                h = [h_hard]
+
+            for xh in h_list[1:]:
+                h.append(xh)
+
+            x = self.compressDWT((ll, h), is_encoder=False)
+            return x
+
+    def update(self):
+        self.compressDWT.update()
+        with torch.no_grad():
+            freq_select_clamp = self.freq_select.clamp(0, 1)
+            freq_select_norm = (freq_select_clamp / freq_select_clamp.sum()) * self.norm
+            self.freq_select.data = freq_select_norm
+
+
+class QuantiUnsign(EncoderDecoderPair):
+    r"""
+    Quantization with scaling factor and bit of unsigned integer
+
+    Args:
+        bit (int): Bits of integer after quantization
+        q_factor (float): scale factor to match the range  after quantization
+        is_shift (bool): Shift range of value from unsigned to symmetric signed
+    """
     def __init__(self, bit=8, q_factor=1., is_shift=False):
         super(QuantiUnsign, self).__init__()
         self.bit = bit
@@ -301,17 +383,20 @@ class FtMapShiftNorm(EncoderDecoderPair):
             Shift whole feature map with mean
         """
     is_bypass = True
-    bypass_indx = 1
 
     def __init__(self):
         super(FtMapShiftNorm, self).__init__()
 
     def forward(self, x, is_encoder=True):
+        r"""
+
+        Args:
+            x ( torch.Tensor, tuple[torch.Tensor]):
+            is_encoder (bool):
+
+        Returns:
+
         """
-                First dimension of input seem as batch
-                    For encoder: arg is input
-                    For decoder: arg is both input and mean
-            """
         if is_encoder:
             x_mean = x
             for i in range(1, len(x_mean.size())):
@@ -321,18 +406,19 @@ class FtMapShiftNorm(EncoderDecoderPair):
         else:
             x, x_mean = x
             x = x + x_mean
+
             return x
 
 
 class Transform(EncoderDecoderPair):
-    """
-        Apply transform_matrix to pixels and maintain inverse_matrix for decoder
+    r"""
+    Apply transform_matrix to pixels and maintain inverse_matrix for decoder
 
-        The dimension of transform_matrix is (input channel, input channel) which maps feature map to
-        same channel dimension
+    The dimension of transform_matrix is (input channel, input channel) which maps feature map to
+    same channel dimension
 
-        Args:
-            channel_num (int): The input channel number
+    Args:
+        channel_num (int): The input channel number
     """
     def __init__(self, channel_num, norm_mode='l1', init_value=None):
         super(Transform, self).__init__()
@@ -365,9 +451,10 @@ class Transform(EncoderDecoderPair):
                 weight_norm = weight / (weight ** 2).sum(dim=1)  # L2
             else:
                 weight_norm = weight
-            x_tr = F.conv2d(x, weight_norm)
+            x_tr_de_w = F.conv2d(x, weight_norm.detach())
+            x_tr_de_x = F.conv2d(x.detach(), weight_norm)
 
-            return x_tr
+            return x_tr_de_w, x_tr_de_x
 
         else:
             weight = self.inverse_matrix.unsqueeze(-1)
@@ -392,13 +479,13 @@ class Transform(EncoderDecoderPair):
 
 
 class DownSampleBranch(nn.Sequential):
-    """
-                DownSample Branch. Given transforms will apply to both paths
-                Input need to be EncoderDecoderPair to ensure have both encode decode path
+    r"""
+    DownSample Branch. Given transforms will apply to both paths
+    Input need to be EncoderDecoderPair to ensure have both encode decode path
 
-                Args:
-                        *args  (List[EncoderDecoderPair], Tuple[EncoderDecoderPair]): Sequence of EncoderDecoderPair
-            """
+    Args:
+            *args  (List[EncoderDecoderPair], Tuple[EncoderDecoderPair]): Sequence of EncoderDecoderPair
+    """
     def __init__(self, *args):
         super(DownSampleBranch, self).__init__()
 
@@ -427,15 +514,38 @@ class DownSampleBranch(nn.Sequential):
             return x
 
 
-class BypassSequential(nn.Sequential):
-    """
-            Sequential with bypass path
-            Input need to be EncoderDecoderPair to ensure have both encode decode path
-            The sequence of decoder will reverse automatically
+class DualPath(nn.Sequential):
+    def __init__(self, separate, module):
+        super(DualPath, self).__init__()
+        self.separate = separate
+        self.module = module
 
-            Args:
-                    *args  (List[EncoderDecoderPair], Tuple[EncoderDecoderPair]): Sequence of EncoderDecoderPair
-        """
+    def forward(self, x, is_encoder=True):
+        if is_encoder:
+            x_path_0, x_path_1 = self.separate(x)
+            x_path_0 = self.module(x_path_0, is_encoder=True)
+            x_path_1 = self.module(x_path_1, is_encoder=True)
+
+            return x_path_0, x_path_1
+        else:
+            x = self.module(x, is_encoder=False)  # TODO only one pass?
+            x = self.separate(x, is_encoder=False)
+            return x
+
+    def update(self):
+        for module in self._modules.values():
+            module.update()
+
+
+class BypassSequential(nn.Sequential):
+    r"""
+    Sequential with bypass path
+    Input need to be EncoderDecoderPair to ensure have both encode decode path
+    The sequence of decoder will reverse automatically
+
+    Args:
+            *args  (List[EncoderDecoderPair], Tuple[EncoderDecoderPair]): Sequence of EncoderDecoderPair
+    """
     def __init__(self, *args):
         super(BypassSequential, self).__init__()
 
@@ -454,13 +564,9 @@ class BypassSequential(nn.Sequential):
             for module in self._modules.values():
                 x = module(x, is_encoder=True)
                 if module.is_bypass:
-                    bypass = x[module.bypass_indx:]
-                    x = x[:module.bypass_indx]
+                    bypass = x[1]
+                    x = x[0]
 
-                    if len(bypass) == 1:
-                        bypass = bypass[0]
-                    if len(x) == 1:
-                        x = x[0]
                     bypass_stack.append(bypass)
             return x, bypass_stack
         else:
@@ -480,22 +586,27 @@ class BypassSequential(nn.Sequential):
 
 class Compress(nn.Module):
     """
-                Forward do both encode and decode
-                Args:
-                    compress (nn.Module): compress module, need to have both encode and decode ability
+    Forward do both encode and decode
 
-                Return:
-                    x, fm_transforms
-            """
-    def __init__(self, compress):
+    Args:
+        compress (nn.Module): compress module, need to have both encode and decode ability
+
+    Returns:
+        x, fm_transforms
+    """
+    def __init__(self, compress, channel_num, rand_factor=0.):
         super(Compress, self).__init__()
         self.compress = compress
 
     def forward(self, x):
         fm_transforms = self.compress(x, is_encoder=True)
-        x = self.compress(fm_transforms, is_encoder=False)
-        fm_transforms, bypass_stack = fm_transforms  # TODO clean up
-        return x, fm_transforms
+        # TODO no!!!!!!!!!!!!!!!!!! too ugly!!!!!!!!!!!!!!!!!!
+        fm_transforms_path_0, fm_transforms_path_1 = fm_transforms
+        fm_transforms_path_1, _ = fm_transforms_path_1
+
+        x = self.compress(fm_transforms_path_0, is_encoder=False)
+
+        return x, fm_transforms_path_1
 
     def update(self):
         self.compress.update()

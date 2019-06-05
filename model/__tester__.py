@@ -1,9 +1,20 @@
 import torch
-from model.compress import Transform, AdaptiveDWT
+from model.compress import Transform, AdaptiveDWT, softmin_round
+is_test_softmin_round = True
 is_test_Transform = False
 is_test_AdaptiveDWT = False
 
 if __name__ == '__main__':
+    if is_test_softmin_round:
+        tau = 2
+        x = torch.Tensor(10, 64, 3, 8, 8).cuda()
+        min_int, max_int = -128, 127
+        x.uniform_(min_int, max_int)
+        x = x.round_()
+        x_soft = softmin_round(x, min_int, max_int + 1, tau)
+        error = torch.abs(x - x_soft)
+        assert error.max().item() < 1e-10, (error.mean(), error.max())
+
     if is_test_Transform:
         torch.set_default_dtype(torch.float64)
 

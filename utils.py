@@ -8,8 +8,10 @@ import torchvision.transforms as transforms
 from torch.autograd import Variable
 import torchvision.datasets as datasets
 import torchvision.datasets as dset
+from typing import Tuple
 from collections.abc import Iterable
 import matplotlib
+import model.compress as compress
 
 from meter import AverageMeter
 
@@ -17,6 +19,14 @@ matplotlib.use('Agg')
 
 
 def create_exp_dir(path, scripts_to_save=None):
+    r"""
+    create experiment directory for check point and scripts (optional)
+
+
+    Args:
+        path: path of directory, the check point will in ./path/
+        scripts_to_save: scripts to save
+    """
     if not os.path.exists(path):
         os.mkdir(path)
     print('Experiment dir : {}'.format(path))
@@ -93,7 +103,7 @@ def get_imageNet_loader(args):
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=True,
-        num_workers=args.workers, pin_memory=True, sampler=None)
+        num_workers=args.workers, pin_memory=True)
 
     val_loader = torch.utils.data.DataLoader(
         datasets.ImageFolder(valdir, transforms.Compose([
@@ -160,7 +170,7 @@ def load(model, args):
     ckpt = torch.load(model_path)
     try:
         net_dic = ckpt['net']
-    except:
+    except KeyError:
         model.load_state_dict(ckpt)
         return
 
@@ -214,7 +224,7 @@ def gen_seg_dict(k, maximum, len_key=False):
         maximum (int): Maximum for range
         len_key (bool): code for key or length for key
 
-    Return:
+    Returns:
         code_length_dict or length_code_dict for signed sparse-exponential-Golomb
     """
     assert k >= 0, "k must >= 0"
@@ -253,7 +263,7 @@ def gen_signed_seg_dict(k, maximum, len_key=False):
         maximum (int): Maximum for range
         len_key (bool): code for key or length for key
 
-    Return:
+    Returns:
         code_length_dict or length_code_dict  for signed sparse-exponential-Golomb
     """
     assert k >= 0, "k must >= 0"
@@ -300,11 +310,14 @@ def stream2bit_cnt(in_stream, code_length_dict, conti=False, dual_conti=False):
     """
     Bit cnt for given stream with dictionary of code length
 
-    :param in_stream:  Input stream
-    :param code_length_dict: code_length_dict, key(int) is code_length, value is iterable codes before encoding
-    :param conti: The continuous sequence of number
-    :param dual_conti: The sequence
-    :return: Total length (bits)
+    Args:
+        in_stream (torch.Tensor):  Input stream
+        code_length_dict(dict): code_length_dict, key(int) is code_length, value is iterable codes before encoding
+        conti(bool): The continuous sequence of number
+        dual_conti(bool): The sequence
+
+    Returns:
+        Total length (bits)
     """
     eps = 10 ** -5
     assert ((in_stream % 1) < eps).max(), "in_stream need to be integers"
@@ -424,13 +437,13 @@ def iterable_l1(x):
         return x.cuda().abs().sum()
 
     elif isinstance(x, Iterable):
-        l2 = 0
+        l1 = 0
         for x_e in x:
-            l2 += iterable_l1(x_e)
-        return l2
+            l1 += iterable_l1(x_e)
+        return l1
 
 
-def iterable_weighted_l1(x, length_code_dict):
+def piecewise_linear(x, length_code_dict):
     if isinstance(x, torch.Tensor):
         l1 = 0
         key_gap = 2
@@ -448,6 +461,32 @@ def iterable_weighted_l1(x, length_code_dict):
         for x_e in x:
             l1 += iterable_l1(x_e)
         return l1
+
+
+def dwt_channel_weighted_loss(x, channel_weight):
+    r"""
+    Loss dedicated to dwt
+    With different weight (amount of penalty) for different channels
+
+    Args:
+        x (list[Tuple[torch.Tensor, list[torch.Tensor]]]): list of DWT result in each layers
+        channel_weight (list[torch.Tensor]): list of channel_weight in each layers
+
+    Returns:
+        loss
+    """
+    loss = 0
+    for x_layer, channel_weight_layer in zip(x, channel_weight):
+        _, xh = x_layer
+        # match dim
+        channel_weight_layer = channel_weight_layer.unsqueeze(dim=-1)
+        channel_weight_layer = channel_weight_layer.unsqueeze(dim=-1)
+        channel_weight_layer = channel_weight_layer.unsqueeze(dim=-1)
+        xh0_cuda = xh[0].cuda()
+        # channel_weight_layer = compress.random_round(channel_weight_layer, rand_factor=0.05)
+        loss += (channel_weight_layer * xh0_cuda * xh0_cuda).sum()  # highest frequency only
+
+    return loss
 
 
 def get_param_names(model, name_tail):

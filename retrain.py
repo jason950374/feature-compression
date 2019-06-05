@@ -40,10 +40,12 @@ parser.add_argument('--k', type=int, default=0, help="k for exponential-Golomb")
 parser.add_argument('--l1_coe', type=float, default=0, help="coefficient of L1 regularizer for sparsity")
 parser.add_argument('--bit', type=int, default=8, help="coefficient of L1 regularizer for sparsity")
 parser.add_argument('--norm_mode', type=str, default='l1', help="coefficient of L1 regularizer for sparsity")
+parser.add_argument('--rand_factor', type=float, default=0, help="rand_factor")
 
 args = parser.parse_args()
 # args.save = 'ckpts/retrain_{}_{}'.format(args.wavelet, args.load[6:-9])
-args.save = 'ckpts/retrain_spL1_{}_norm_mode_{}'.format(args.l1_coe, args.norm_mode)
+args.save = 'ckpts/retrain_lr_{}_median_tanh_select_spLossL2_HiFeq_{}'.format(args.learning_rate, args.l1_coe)
+# args.save = 'ckpts/retrain_check_BP_{}'.format(time.strftime("%m%d_%H%M%S"))
 args.learning_rate = args.learning_rate * args.batch_size / 256
 
 
@@ -137,7 +139,8 @@ def main():
     settings = [{'setting_names': utils.get_param_names(model, 'transform_matrix'),
                  'lr': args.learning_rate,
                  'weight_decay': 0,
-                 'momentum': 0
+                 # 'momentum': 0
+                 'momentum': args.momentum
                  }]
     params = utils.optimizer_setting_separator(model, settings)
 
@@ -168,7 +171,7 @@ def main():
         scheduler.step()
         logging.info('[Train] Epoch = %d , LR = %e', epoch, scheduler.get_lr()[0])
         is_best = False
-        train(train_queue, model, criterion, optimizer, epoch, args, length_code_dict)
+        train(train_queue, model, criterion, optimizer, epoch, args, milestones, length_code_dict)
 
         # Evaluate the test accuracy
         if epoch > args.epochs_test:
@@ -186,15 +189,8 @@ def main():
             utils.save_checkpoint(model, is_best, args.save, epoch)
             logging.info('============================================================================')
 
-        '''
-        if (epoch % 4) == 3 and (epoch < milestones[0]) or (epoch % 8) == 7 and (epoch < milestones[1]):
-            for m in model.modules():
-                if isinstance(m, CompressDWT):
-                    with torch.no_grad():
-                        m.q_table.data *= 1.05'''
 
-
-def train(train_queue, model, criterion, optimizer, cur_epoch, args, length_code_dict, warm_up=False):
+def train(train_queue, model, criterion, optimizer, cur_epoch, args, milestones, length_code_dict, warm_up=False):
     objs = meter.AverageMeter()
     top1 = meter.AverageMeter()
     top5 = meter.AverageMeter()
@@ -217,8 +213,19 @@ def train(train_queue, model, criterion, optimizer, cur_epoch, args, length_code
 
         loss = criterion(logits, target)
         if args.l1_coe > 1e-20:
-            l1 = utils.iterable_l1(fm_transforms)
-            loss += (l1 * args.l1_coe)
+            # l1 = utils.iterable_l1(fm_transforms)
+            channel_weight = [((compress.compress.module[-1].freq_select.detach()
+                                - compress.compress.module[-1].freq_select.detach().median()) * 5).tanh()
+                              for compress in model.stages.compress]
+            # channel_weight = [compress.compress.module[-1].freq_select.detach() - 0.5
+            #                   for compress in model.stages.compress]
+            sp_loss = utils.dwt_channel_weighted_loss(fm_transforms, channel_weight)
+            for milestone in milestones:
+                if cur_epoch > milestone:
+                    sp_loss *= 10
+                else:
+                    break
+            loss += (sp_loss * args.l1_coe)
         optimizer.zero_grad()
         loss.backward()
         nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
@@ -237,6 +244,16 @@ def train(train_queue, model, criterion, optimizer, cur_epoch, args, length_code
         end = time.time()
 
         if step % args.report_freq == 0:
+            # print("Max 0", model.stages.compress[0].compress.separate.transform_matrix.grad.max())
+            # print("Min 0", model.stages.compress[0].compress.separate.transform_matrix.grad.min())
+            # print("Max 4", model.stages.compress[4].compress.separate.transform_matrix.grad.max())
+            # print("Min 4", model.stages.compress[4].compress.separate.transform_matrix.grad.min())
+            # print("Max 7", model.stages.compress[7].compress.separate.transform_matrix.grad.max())
+            # print("Min 7", model.stages.compress[7].compress.separate.transform_matrix.grad.min())
+            # print(model.stages.compress[7].compress.separate.transform_matrix.grad)
+            # print(model.stages.compress7.compress.separate.transform_matrix.grad)
+            # print(model.stages.compress7.compress.module[2].freq_select.grad)
+            # print(model.stages.layers[7].block.conv2.weight.grad)
             logging.info('[%s] Epoch:%d/%d Step:%d/%d Loss:%.2e Top1_acc:%.1f%% Top5_acc:%.1f%%',
                          suffix, cur_epoch, total_epoch, step, total_step, objs.avg, top1.avg, top5.avg)
             time_remain = utils.getTime((((args.epochs - cur_epoch) * total_step) - step) * batch_time.avg)
@@ -276,15 +293,19 @@ def compress_list_gen(maximum_fm, wavelet='db1', bit=8):
 
         q_table_dwt = q_table_dwt * 255 / maximum_fm[i]
 
+        tr = Transform(channel[i], norm_mode=args.norm_mode).cuda()
         compress_seq = [
-            Transform(channel[i], norm_mode=args.norm_mode).cuda(),
             QuantiUnsign(bit=bit, q_factor=q_factor, is_shift=False).cuda(),
             FtMapShiftNorm(),
             # CompressDCT(q_table=utils.q_table_dct_gen(q_list_dct)).cuda(),
-            CompressDWT(level=3, bit=bit, q_table=q_table_dwt, wave=wavelet).cuda()
+            # CompressDWT(level=3, bit=bit, q_table=q_table_dwt, wave=wavelet).cuda()
+            MaskCompressDWT({"level": 3, "bit": bit, "q_table": q_table_dwt, "wave": wavelet},
+                            channel[i]).cuda()
         ]
 
-        compress_list.append(Compress(BypassSequential(*compress_seq)))
+        seq = BypassSequential(*compress_seq)
+        pair = DualPath(tr, seq)
+        compress_list.append(Compress(pair, channel[i]).cuda())
 
     q_factor = maximum_fm[-1] / (2 ** bit - 1)
     q_table_dwt = torch.tensor([10 ** 6, 10 ** 6, 10 ** 6, 1], dtype=torch.get_default_dtype())
@@ -293,13 +314,18 @@ def compress_list_gen(maximum_fm, wavelet='db1', bit=8):
 
     q_table_dwt = q_table_dwt * 255 / maximum_fm[-1]
 
+    tr = Transform(channel[-1], norm_mode=args.norm_mode).cuda()
     compress_seq = [
         QuantiUnsign(bit=bit, q_factor=q_factor).cuda(),
         # CompressDCT(q_table=utils.q_table_dct_gen(q_list_dct)).cuda(),
-        CompressDWT(level=3, bit=bit, q_table=q_table_dwt, wave='haar').cuda()
+        # CompressDWT(level=3, bit=bit, q_table=q_table_dwt, wave='haar').cuda()
+        MaskCompressDWT({"level": 3, "bit": bit, "q_table": q_table_dwt, "wave": 'haar'},
+                        channel[-1]).cuda()
     ]
 
-    compress_list.append(Compress(BypassSequential(*compress_seq)))
+    seq = BypassSequential(*compress_seq)
+    pair = DualPath(tr, seq)
+    compress_list.append(Compress(pair, channel[-1]).cuda())
 
     return compress_list
 

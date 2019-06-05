@@ -16,7 +16,7 @@
 * pytz==2018.9
 * PyWavelets==1.0.3
 * six==1.11.0
-* torch==0.4.1.post2
+* torch==1.1.0
 * torchvision==0.2.1
 * tornado==5.1.1
 * tqdm==4.28.1

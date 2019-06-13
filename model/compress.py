@@ -22,13 +22,25 @@ def random_round(x, rand_factor=0.):
 
 
 def softmin_round(x, min_int, max_int, tau=1):
-    int_set = torch.arange(min_int, max_int, step=1.)
+    """
+
+    Args:
+        x (torch.Tensor): input
+        min_int (int):
+        max_int (int):
+        tau (float):
+
+    Returns:
+        rounded x (torch.Tensor)
+    """
+    int_set = torch.arange(min_int, max_int+1, step=1.)
     in_device = x.get_device()
     if in_device >= 0:  # On gpu
         int_set = int_set.to(in_device)
     x_repeat = x.unsqueeze(-1)
     x_repeat = x_repeat.repeat_interleave(int_set.size(0), dim=-1)
-    distant = (x_repeat - int_set).abs() * tau
+    # distant = (x_repeat - int_set).abs() * tau
+    distant = ((x_repeat - int_set) ** 2) * tau
     weight = F.softmin(distant, dim=-1)
     return (weight * int_set).sum(-1)
 
@@ -135,13 +147,16 @@ class CompressDCT(EncoderDecoderPair):
 class CompressDWT(EncoderDecoderPair):
     """
     Compress with DWT and Q table
-    Args:
+    """
+    def __init__(self, level=1, bit=8, q_table=None, wave='haar', rand_factor=0.):
+        """
+        Args:
             level (int): Level of DWT
             bit (int): Bits after quantization
             q_table (list, tuple): Quantization table, scale is fine to coarse
             wave (str, pywt.Wavelet, tuple or list): Mother wavelet
-    """
-    def __init__(self, level=1, bit=8, q_table=None, wave='haar', rand_factor=0.):
+            rand_factor:
+        """
         super(CompressDWT, self).__init__()
         self.bit = bit
         if q_table is None:
@@ -187,13 +202,18 @@ class AdaptiveDWT(EncoderDecoderPair):
     r"""
     Compress with DWT and Q table
     The wave will select adaptively
-    Args:
-        level (int): Level of DWT
-        bit (int): Bits after quantization
-        q_table (list, tuple): Quantization table, scale is fine to coarse
     """
 
     def __init__(self, x_size, level=1, bit=8, q_table=None, rand_factor=0.):
+        """
+
+        Args:
+            x_size: x_size. If x's H or W is odd number, need x_size to guarantee the reconstruction has same size
+            level (int): Level of DWT
+            bit (int): Bits after quantization
+            q_table (list, tuple): Quantization table, scale is fine to coarse
+            rand_factor:
+        """
         super(AdaptiveDWT, self).__init__()
         self.bit = bit
         if q_table is None:
@@ -278,67 +298,81 @@ class AdaptiveDWT(EncoderDecoderPair):
 
 
 class MaskCompressDWT(EncoderDecoderPair):
-    def __init__(self, kwargs_dwt, channel_num, is_adaptive=False, tau=1):
+    def __init__(self, kwargs_dwt, channel_num, is_adaptive=False, ratio=0.5, softmin_tau=1):
+        """
+        Args:
+            kwargs_dwt: keyword args for dwt
+            channel_num (int): number of channels
+            is_adaptive (bool): use CompressDWT or AdaptiveDWT
+            ratio (float): retain ratio
+            softmin_tau (float): temperature of softmin in softmin_round
+        """
         super(MaskCompressDWT, self).__init__()
         self.compressDWT = AdaptiveDWT(**kwargs_dwt) if is_adaptive else CompressDWT(**kwargs_dwt)
-        self.tau = tau
+        self.softmin_tau = softmin_tau
         self.freq_select = nn.Parameter(torch.ones(channel_num))
         # self.freq_select = nn.Parameter(torch.cat([torch.ones(channel_num // 2),
         #                                            torch.zeros(channel_num // 2)]))
-        self.norm = channel_num / 2
+        self.norm = channel_num * ratio
+        self.channel_num = channel_num
+        self.ratio = ratio
 
     def forward(self, x, is_encoder=True):
-        if is_encoder:
-            x = self.compressDWT(x, is_encoder=True)
-            '''
-            ll, h_list = x_dwt
+        if self.training or (self.ratio == 1):
+            if is_encoder:
+                x = self.compressDWT(x, is_encoder=True)
 
-            # masking
-            freq_select_clamp = self.freq_select.clamp(0, 1)
-            freq_select_norm = (freq_select_clamp / freq_select_clamp.sum()) * self.norm
-
-            freq_select_norm = freq_select_norm.unsqueeze(dim=-1)
-            freq_select_norm = freq_select_norm.unsqueeze(dim=-1)
-            freq_select_norm = freq_select_norm.unsqueeze(dim=-1)
-
-            h_hard = h_list[0] * (1 - torch.round(freq_select_norm))
-            if self.training:
-                # h_hard = h_list[0] * (1 - random_round(freq_select_norm, rand_factor=self.rand_factor))
-                # x = [h_hard.detach() + h0 - h0.detach()]
-                h0 = h_list[0] * (1 - softmin_round(freq_select_norm, 0, 2))
-                h = [h_hard.detach() + h0 - h0.detach()]
+                return x
             else:
-                h = [h_hard]
+                ll, h_list = x
 
-            for xh in h_list[1:]:
-                h.append(xh)'''
+                # masking
+                freq_select_clamp = self.freq_select.clamp(0, 1)
+                freq_select_norm = (freq_select_clamp / freq_select_clamp.sum()) * self.norm
+                if abs(self.ratio - 0.5) < 0.000001:
+                    threshold = freq_select_norm.median()
+                else:
+                    kth = int(freq_select_norm.size(0) * self.ratio)
+                    if kth != 0:
+                        threshold, _ = torch.kthvalue(freq_select_norm, kth)
+                    else:
+                        threshold = 0
 
-            return x
-        else:
-            ll, h_list = x
+                freq_select_norm = freq_select_norm.unsqueeze(dim=-1)
+                freq_select_norm = freq_select_norm.unsqueeze(dim=-1)
+                freq_select_norm = freq_select_norm.unsqueeze(dim=-1)
 
-            # masking
-            freq_select_clamp = self.freq_select.clamp(0, 1)
-            freq_select_norm = (freq_select_clamp / freq_select_clamp.sum()) * self.norm
+                # h_hard = h_list[0] * (1 - torch.round(freq_select_norm))
+                mask_hard = (1 - (freq_select_norm > threshold).float())
+                mask_soft = (1 - softmin_round(freq_select_norm, 0, 1, self.softmin_tau))
+                mask = mask_hard.detach() + mask_soft - mask_soft.detach()
+                h0 = h_list[0] * mask
+                h = [h0]
 
-            freq_select_norm = freq_select_norm.unsqueeze(dim=-1)
-            freq_select_norm = freq_select_norm.unsqueeze(dim=-1)
-            freq_select_norm = freq_select_norm.unsqueeze(dim=-1)
+                for xh in h_list[1:]:
+                    h.append(xh)
 
-            h_hard = h_list[0] * (1 - torch.round(freq_select_norm))
-            if self.training:
-                # h_hard = h_list[0] * (1 - random_round(freq_select_norm, rand_factor=self.rand_factor))
-                # x = [h_hard.detach() + h0 - h0.detach()]
-                h0 = h_list[0] * (1 - softmin_round(freq_select_norm, 0, 2))
-                h = [h_hard.detach() + h0 - h0.detach()]
+                x = self.compressDWT((ll, h), is_encoder=False)
+                return x
+        else:  # eval
+            if is_encoder:
+                assert self.channel_num == x.size(1), \
+                    "Channel mismatch {}, {}".format(self.channel_num, x.size(1))
+
+                remain_num = int(self.channel_num * self.ratio)
+                mask_num = self.channel_num - remain_num
+                x_remain, x_masked = x.split([remain_num, mask_num], dim=1)
+                x_dwt_remain = self.compressDWT(x_remain, is_encoder=True)
+                x_dwt_masked = self.compressDWT(x_masked, is_encoder=True)
+                x_dwt_masked[1][0].zero_()
+                return x_dwt_remain, x_dwt_masked
             else:
-                h = [h_hard]
+                x_dwt_remain, x_dwt_masked = x
+                x_remain = self.compressDWT(x_dwt_remain, is_encoder=False)
+                x_masked = self.compressDWT(x_dwt_masked, is_encoder=False)
+                x = torch.cat([x_remain, x_masked], dim=1)
 
-            for xh in h_list[1:]:
-                h.append(xh)
-
-            x = self.compressDWT((ll, h), is_encoder=False)
-            return x
+                return x
 
     def update(self):
         self.compressDWT.update()
@@ -346,6 +380,11 @@ class MaskCompressDWT(EncoderDecoderPair):
             freq_select_clamp = self.freq_select.clamp(0, 1)
             freq_select_norm = (freq_select_clamp / freq_select_clamp.sum()) * self.norm
             self.freq_select.data = freq_select_norm
+
+    def reorder(self):
+        with torch.no_grad():
+            _, indx = self.freq_select.sort()
+        return indx
 
 
 class QuantiUnsign(EncoderDecoderPair):
@@ -423,7 +462,11 @@ class Transform(EncoderDecoderPair):
     def __init__(self, channel_num, norm_mode='l1', init_value=None):
         super(Transform, self).__init__()
         self.transform_matrix = nn.Parameter(torch.Tensor(channel_num, channel_num))
+        # self.register_buffer('transform_matrix_reorder', None)
+        self.register_buffer('transform_matrix_reorder', torch.Tensor(channel_num, channel_num))
         self.register_buffer('inverse_matrix', torch.Tensor(channel_num, channel_num))
+        # self.register_buffer('inverse_matrix_reorder', None)
+        self.register_buffer('inverse_matrix_reorder', torch.Tensor(channel_num, channel_num))
         self.norm_mode = norm_mode
 
         if init_value is None:
@@ -441,23 +484,33 @@ class Transform(EncoderDecoderPair):
 
     def forward(self, x, is_encoder=True):
         if is_encoder:
-            weight = self.transform_matrix.unsqueeze(-1)
-            weight = weight.unsqueeze(-1)
-            if self.norm_mode == 'sum':
-                weight_norm = weight / weight.sum(dim=1)  # sum
-            elif self.norm_mode == 'l1':
-                weight_norm = weight / weight.abs().sum(dim=1)  # L1
-            elif self.norm_mode == 'l2':
-                weight_norm = weight / (weight ** 2).sum(dim=1)  # L2
-            else:
-                weight_norm = weight
-            x_tr_de_w = F.conv2d(x, weight_norm.detach())
-            x_tr_de_x = F.conv2d(x.detach(), weight_norm)
+            if self.training:
+                weight = self.transform_matrix.unsqueeze(-1)
+                weight = weight.unsqueeze(-1)
+                if self.norm_mode == 'sum':
+                    weight_norm = weight / weight.sum(dim=1)  # sum
+                elif self.norm_mode == 'l1':
+                    weight_norm = weight / weight.abs().sum(dim=1)  # L1
+                elif self.norm_mode == 'l2':
+                    weight_norm = weight / (weight ** 2).sum(dim=1)  # L2
+                else:
+                    weight_norm = weight
+                x_tr_de_w = F.conv2d(x, weight_norm.detach())
+                # x_tr_de_x = F.conv2d(x.detach(), weight_norm)
+                x_tr_de_x = F.conv2d(x, weight_norm)
 
-            return x_tr_de_w, x_tr_de_x
+                return x_tr_de_w, x_tr_de_x
+            else:
+                weight = self.transform_matrix_reorder.unsqueeze(-1)
+                weight = weight.unsqueeze(-1)
+                x = F.conv2d(x, weight)
+                return x, x
 
         else:
-            weight = self.inverse_matrix.unsqueeze(-1)
+            if self.training:
+                weight = self.inverse_matrix.unsqueeze(-1)
+            else:
+                weight = self.inverse_matrix_reorder.unsqueeze(-1)
             weight = weight.unsqueeze(-1)
             x = F.conv2d(x, weight)
 
@@ -476,6 +529,11 @@ class Transform(EncoderDecoderPair):
                 self.transform_matrix.data /= (self.transform_matrix ** 2).sum(dim=1)  # L2
             # self.inverse_matrix.data = torch.pinverse(self.transform_matrix)
         self.inverse_matrix.data = torch.inverse(self.transform_matrix)
+
+    def reorder(self, indx):
+        with torch.no_grad():
+            self.transform_matrix_reorder.data = self.transform_matrix[indx, :]
+            self.inverse_matrix_reorder.data = torch.inverse(self.transform_matrix_reorder)
 
 
 class DownSampleBranch(nn.Sequential):

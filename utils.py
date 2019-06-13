@@ -3,13 +3,13 @@ import time
 import numpy as np
 import torch
 import torch.utils.data
+import torch.nn.functional as F
 import shutil
 import torchvision.transforms as transforms
 from torch.autograd import Variable
 import torchvision.datasets as datasets
-import torchvision.datasets as dset
 from typing import Tuple
-from collections.abc import Iterable
+from collections.abc import Iterable, MappingView
 import matplotlib
 import model.compress as compress
 
@@ -56,8 +56,8 @@ def get_loader(args):
 def get_cifar_loader(args):
     # Set the data loader
     train_transform, test_transform = _data_transforms_cifar10()
-    train_data = dset.CIFAR10(root=args.data, train=True, download=True, transform=train_transform)
-    test_data = dset.CIFAR10(root=args.data, train=False, download=True, transform=test_transform)
+    train_data = datasets.CIFAR10(root=args.data, train=True, download=True, transform=train_transform)
+    test_data = datasets.CIFAR10(root=args.data, train=False, download=True, transform=test_transform)
 
     train_queue = torch.utils.data.DataLoader(
         train_data, batch_size=args.batch_size, shuffle=False, pin_memory=True, num_workers=args.workers)
@@ -470,7 +470,7 @@ def dwt_channel_weighted_loss(x, channel_weight):
 
     Args:
         x (list[Tuple[torch.Tensor, list[torch.Tensor]]]): list of DWT result in each layers
-        channel_weight (list[torch.Tensor]): list of channel_weight in each layers
+        channel_weight (list[torch.Tensor], MappingView[torch.Tensor]): list of channel_weight in each layers
 
     Returns:
         loss
@@ -487,6 +487,10 @@ def dwt_channel_weighted_loss(x, channel_weight):
         loss += (channel_weight_layer * xh0_cuda * xh0_cuda).sum()  # highest frequency only
 
     return loss
+
+
+def bipolar(x, th):
+    return -((x - th).abs().sum())
 
 
 def get_param_names(model, name_tail):
@@ -529,6 +533,32 @@ def optimizer_setting_separator(model, settings):
             else:
                 params[0]['params'] = [param]
     return params
+
+
+def freq_select2channel_weight(freq_select, ratio=0.5, tau=5):
+    r"""
+
+    Args:
+        freq_select(torch.Tensor): freq_select from MaskCompressDWT
+        ratio(float): Retaining ratio
+        tau(float): Temperature of hyperbolic tangent
+
+    Returns:
+        channel_weight(Tensor)
+    """
+    assert len(freq_select.size()) == 1, \
+        "freq_select's size need to be (channel, ), but get {}".format(freq_select.size())
+    if abs(ratio - 0.5) < 0.000001:
+        # return F.leaky_relu(((freq_select - freq_select.median()) * tau).tanh())
+        return F.relu(((freq_select - freq_select.median()) * tau).tanh())
+    else:
+        kth = int(freq_select.size(0) * ratio)
+        if kth != 0:
+            kthvalue, _ = torch.kthvalue(freq_select, kth)
+        else:
+            kthvalue = 0
+        # return F.leaky_relu(((freq_select - kthvalue) * tau).tanh())
+        return F.relu(((freq_select - kthvalue) * tau).tanh())
 
 
 if __name__ == '__main__':

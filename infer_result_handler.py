@@ -383,6 +383,141 @@ class HandlerDWT_Fm(InferResultHandler):
         self.print_range_layer = print_range_layer
 
 
+class HandlerMaskedDWT_Fm(InferResultHandler):
+    def __init__(self, print_fn=print, save="", code_length_dict=None, print_sparsity=True, print_range_all=False,
+                 print_range_layer=True):
+        self.states_updated = False
+        self.zero_cnt = 0
+        self.size_flat = 0
+        self.max_mins = []
+        self.max = -2 ** 40
+        self.min = 2 ** 40
+        self.code_len = 0
+        self.hist_meters = []
+        self.max_ch = []
+        self.min_ch = []
+
+        # IO
+        self.print_fn = print_fn
+
+        self.save = save
+
+        # Config
+        self.code_length_dict = code_length_dict
+        self.print_sparsity = print_sparsity
+        self.print_range_all = print_range_all
+        self.print_range_layer = print_range_layer
+
+    def update_batch(self, result, inputs=None):
+        _, _, fm_transforms_batch = result
+        assert len(fm_transforms_batch) != 0, "Nothing in fm_transforms_batch!!!"
+        self.states_updated = False
+
+        for layer_num, feature_map_batch in enumerate(fm_transforms_batch):
+            assert type(feature_map_batch) is tuple, "fm_transform_batch is not tuple, make sure it's DWT"
+            x_dwt_remain, x_dwt_masked = feature_map_batch
+
+            XL, XH = x_dwt_remain
+            XL_cuda = XL.cuda()
+
+            if len(self.max_mins) <= layer_num:
+                self.max_mins.append(MaxMinMeter())
+
+            if len(self.hist_meters) <= layer_num:
+                self.hist_meters.append((HistMeter(self.code_length_dict), []))
+
+            self.zero_cnt += (XL_cuda.abs() < 10 ** -10).sum().item()
+            self.size_flat += XL_cuda.view(-1).size(0)
+            self.max_mins[layer_num].update(XL_cuda)
+            self.hist_meters[layer_num][0].update(XL_cuda)
+
+            for i, xh in enumerate(XH):
+                xh_cuda = xh.cuda()
+                self.zero_cnt += (xh_cuda.abs() < 10 ** -10).sum().item()
+                self.size_flat += xh_cuda.view(-1).size(0)
+                self.max_mins[layer_num].update(xh_cuda)
+
+                if len(self.hist_meters[layer_num][1]) <= i:
+                    self.hist_meters[layer_num][1].append(HistMeter(self.code_length_dict))
+
+                self.hist_meters[layer_num][1][i].update(xh_cuda)
+
+            XL, XH = x_dwt_masked
+            XL_cuda = XL.cuda()
+
+            if len(self.max_mins) <= layer_num:
+                self.max_mins.append(MaxMinMeter())
+
+            if len(self.hist_meters) <= layer_num:
+                self.hist_meters.append((HistMeter(self.code_length_dict), []))
+
+            self.zero_cnt += (XL_cuda.abs() < 10 ** -10).sum().item()
+            self.size_flat += XL_cuda.view(-1).size(0)
+            self.max_mins[layer_num].update(XL_cuda)
+            self.hist_meters[layer_num][0].update(XL_cuda)
+
+            for i, xh in enumerate(XH[1:]):
+                xh_cuda = xh.cuda()
+                self.zero_cnt += (xh_cuda.abs() < 10 ** -10).sum().item()
+                self.size_flat += xh_cuda.view(-1).size(0)
+                self.max_mins[layer_num].update(xh_cuda)
+                self.hist_meters[layer_num][1][i + 1].update(xh_cuda)
+
+    def print_result(self):
+        if not self.states_updated:
+            if self.print_range_all:
+                for layer_num, meter in enumerate(self.max_mins):
+                    self.max = max(self.max, meter.max)
+                    self.min = min(self.min, meter.min)
+
+            assert self.hist_meters is not None, "Please update before print"
+            self.code_len = 0
+            figure = plt.figure()
+            ax = figure.add_subplot(1, 1, 1)
+
+            for layer_num, hist_layer in enumerate(self.hist_meters):
+                xl_hist, xh_hists = hist_layer
+                xl_hist.plt_hist(plt_fn=ax)
+                figure.savefig('{}/Layer{}_XL.png'.format(self.save, layer_num))
+                ax.cla()
+
+                if self.code_length_dict is not None:
+                    self.code_len += xl_hist.get_bit_cnt(self.code_length_dict)
+
+                for i, xh_hist in enumerate(xh_hists):
+                    xh_hist.plt_hist(plt_fn=ax)
+                    figure.savefig('{}/Layer{}_XH_{}.png'.format(self.save, layer_num, i))
+                    ax.cla()
+                    if self.code_length_dict is not None:
+                        self.code_len += xh_hist.get_bit_cnt(self.code_length_dict)
+            plt.close(figure)
+
+            self.states_updated = True
+
+        self.print_fn("==============================================================")
+        if self.print_sparsity:
+            self.print_fn("fm_transforms == 0: {}".format(self.zero_cnt))
+            self.print_fn("fm_transforms size: {}".format(self.size_flat))
+            self.print_fn("transform sparsity: {}".format(self.zero_cnt / self.size_flat))
+        if self.print_range_all:
+            self.print_fn("range: ({}, {})".format(self.min, self.max))
+        if self.print_range_layer:
+            for layer_num, meter in enumerate(self.max_mins):
+                self.print_fn("range in layer{}:  ({}, {})".format(layer_num, meter.max, meter.min))
+        self.print_fn("code length {}".format(self.code_len))
+        self.print_fn("Compress rate {}/{}= {}".format(self.size_flat * 8, self.code_len,
+                                                       self.size_flat * 8 / self.code_len))
+        self.print_fn("==============================================================")
+
+    def set_config(self, code_length_dict=None, print_sparsity=True, print_range_all=False,
+                   print_range_layer=True):
+        self.states_updated = False
+        self.code_length_dict = code_length_dict
+        self.print_sparsity = print_sparsity
+        self.print_range_all = print_range_all
+        self.print_range_layer = print_range_layer
+
+
 class HandlerDCT_Fm(InferResultHandler):
     def __init__(self, print_fn=print, save="", code_length_dict=None):
         # states

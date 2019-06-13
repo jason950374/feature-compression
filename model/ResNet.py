@@ -201,10 +201,12 @@ class ResNetStages(nn.Module):
             if self.compress is not None:
                 if type(self.compress) is list or type(self.compress) is tuple:
                     x_re, fm_transform = self.compress[indx](x)
-                    fm_transforms.append(self._to_cpu(fm_transform))
+                    # fm_transforms.append(self._to_cpu(fm_transform))
+                    fm_transforms.append(fm_transform)
                 else:
                     x_re, fm_transform = self.compress(x.detach())
-                    fm_transforms.append(self._to_cpu(fm_transform))
+                    # fm_transforms.append(self._to_cpu(fm_transform))
+                    fm_transforms.append(fm_transform)
                 x = x_re
 
         return x, feature_maps, fm_transforms

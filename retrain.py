@@ -48,7 +48,7 @@ parser.add_argument('--gamma', type=float, default=0.1, help="gamma")
 
 args = parser.parse_args()
 # args.save = 'ckpts/retrain_{}_{}'.format(args.wavelet, args.load[6:-9])
-args.save = 'ckpts/retrain_lr_{}_Union_TauLoss{}_correctDetach_retainRatio_{}_gamma_{}_select_spLossL2_HiFeq_{}'.format(
+args.save = 'ckpts/retrain_lr_{}_Final_margin_0.1_biKth_1e-3_det_TauLoss{}_retainRatio_{}_gamma_{}_select_spLossL2_HiFeq_{}'.format(
     args.learning_rate, args.tauLoss, args.retainRatio, args.gamma, args.l1_coe)
 # args.save = 'ckpts/retrain_check_BP_{}'.format(time.strftime("%m%d_%H%M%S"))
 args.learning_rate = args.learning_rate * args.batch_size / 256
@@ -145,8 +145,8 @@ def main():
                                   + utils.get_param_names(model, 'freq_select'),
                  'lr': args.learning_rate,
                  'weight_decay': 0,
-                 'momentum': 0
-                 # 'momentum': args.momentum
+                 # 'momentum': 0
+                 'momentum': args.momentum
                  }]
     params = utils.optimizer_setting_separator(model, settings)
 
@@ -202,6 +202,8 @@ def main():
 
 def train(train_queue, model, criterion, optimizer, cur_epoch, args, milestones, length_code_dict, warm_up=False):
     objs = meter.AverageMeter()
+    sp_loss_meter = meter.AverageMeter()
+    detloss_meter = meter.AverageMeter()
     top1 = meter.AverageMeter()
     top5 = meter.AverageMeter()
     model.train(True)
@@ -222,6 +224,7 @@ def train(train_queue, model, criterion, optimizer, cur_epoch, args, milestones,
         logits, _, fm_transforms = model(x)
 
         loss = criterion(logits, target)
+        sp_loss = 0
         if args.l1_coe > 1e-20:
             # l1 = utils.iterable_l1(fm_transforms)
             freq_selects = [compress.compress.module[-1].freq_select.detach() for compress in model.stages.compress]
@@ -229,14 +232,14 @@ def train(train_queue, model, criterion, optimizer, cur_epoch, args, milestones,
                               for freq_select in freq_selects]
             # channels = [16, 16, 16, 32, 32, 32, 64, 64, 64]
             # channel_weight = [torch.ones(channel).cuda() for channel in channels]
-            sp_loss = utils.dwt_channel_weighted_loss(fm_transforms, channel_weight)
+            sp_loss = utils.dwt_channel_weighted_loss(fm_transforms, channel_weight) * args.l1_coe
             '''for milestone in milestones:
                 if cur_epoch > milestone:
                     sp_loss *= 10
                 else:
                     break'''
-            loss += (sp_loss * args.l1_coe)
-        '''
+            loss += sp_loss
+
         biloss = 0
         for compress in model.stages.compress:
             if abs(args.retainRatio - 0.5) < 0.000001:
@@ -246,9 +249,22 @@ def train(train_queue, model, criterion, optimizer, cur_epoch, args, milestones,
                 threshold, _ = torch.kthvalue(compress.compress.module[-1].freq_select, kth)
             biloss += utils.bipolar(compress.compress.module[-1].freq_select,
                                     threshold.detach())
-        loss += (biloss * 1e-2)'''
+        loss += (biloss * 1e-3)
+
+        detloss = 0
+        # margin = 0.01
+        margin = 0.1
+        for compress in model.stages.compress:
+            m = compress.compress.separate.transform_matrix
+            m = m / m.abs().sum(dim=1, keepdim=True)
+            det = torch.det(m)
+            factor = det.abs().detach() * m.size(0)
+            detloss += ((F.relu(margin - det.abs()) / factor) * args.batch_size * 1e-2)
+        loss += detloss
+
         optimizer.zero_grad()
         loss.backward()
+
         nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
         param_trm = utils.get_params(model, "transform_matrix")
         nn.utils.clip_grad_norm_(param_trm, 0.1)
@@ -259,6 +275,8 @@ def train(train_queue, model, criterion, optimizer, cur_epoch, args, milestones,
         prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
         n = x.size(0)
         objs.update(loss.item(), n)
+        sp_loss_meter.update(sp_loss.item(), n)
+        detloss_meter.update(detloss.item(), n)
         top1.update(prec1.item(), n)
         top5.update(prec5.item(), n)
 
@@ -267,8 +285,9 @@ def train(train_queue, model, criterion, optimizer, cur_epoch, args, milestones,
         end = time.time()
 
         if step % args.report_freq == 0:
-            logging.info('[%s] Epoch:%d/%d Step:%d/%d Loss:%.2e Top1_acc:%.1f%% Top5_acc:%.1f%%',
-                         suffix, cur_epoch, total_epoch, step, total_step, objs.avg, top1.avg, top5.avg)
+            logging.info('[%s] Epoch:%d/%d Step:%d/%d Loss:%.2e sp_loss:%.2e detloss:%.2e Top1_acc:%.1f%% Top5_acc:%.1f%%',
+                         suffix, cur_epoch, total_epoch, step, total_step, objs.avg, sp_loss_meter.avg,
+                         detloss_meter.avg, top1.avg, top5.avg)
             time_remain = utils.getTime((((args.epochs - cur_epoch) * total_step) - step) * batch_time.avg)
             logging.info('[{}] Time: {:.4f} Data: {:.4f} Time remaining: {}'.format(
                     suffix, batch_time.avg, data_time.avg, time_remain))
@@ -318,7 +337,7 @@ def compress_list_gen(maximum_fm, wavelet='db1', bit=8):
 
         seq = BypassSequential(*compress_seq)
         pair = DualPath(tr, seq)
-        compress_list.append(Compress(pair, channel[i]).cuda())
+        compress_list.append(Compress(pair).cuda())
 
     q_factor = maximum_fm[-1] / (2 ** bit - 1)
     q_table_dwt = torch.tensor([10 ** 6, 10 ** 6, 10 ** 6, 1], dtype=torch.get_default_dtype())
@@ -338,7 +357,7 @@ def compress_list_gen(maximum_fm, wavelet='db1', bit=8):
 
     seq = BypassSequential(*compress_seq)
     pair = DualPath(tr, seq)
-    compress_list.append(Compress(pair, channel[-1]).cuda())
+    compress_list.append(Compress(pair).cuda())
 
     return compress_list
 

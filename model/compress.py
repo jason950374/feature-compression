@@ -313,7 +313,7 @@ class MaskCompressDWT(EncoderDecoderPair):
         self.freq_select = nn.Parameter(torch.ones(channel_num))
         # self.freq_select = nn.Parameter(torch.cat([torch.ones(channel_num // 2),
         #                                            torch.zeros(channel_num // 2)]))
-        self.norm = channel_num * ratio
+        self.norm = channel_num * (1 - ratio)
         self.channel_num = channel_num
         self.ratio = ratio
 
@@ -329,12 +329,14 @@ class MaskCompressDWT(EncoderDecoderPair):
                 # masking
                 freq_select_clamp = self.freq_select.clamp(0, 1)
                 freq_select_norm = (freq_select_clamp / freq_select_clamp.sum()) * self.norm
+                # freq_select_norm = (freq_select_clamp - freq_select_clamp.min()) / \
+                #                    (freq_select_clamp.max() - freq_select_clamp.min() + 1e-10)
                 if abs(self.ratio - 0.5) < 0.000001:
-                    threshold = freq_select_norm.median()
+                    threshold = freq_select_norm.detach().median()
                 else:
                     kth = int(freq_select_norm.size(0) * self.ratio)
                     if kth != 0:
-                        threshold, _ = torch.kthvalue(freq_select_norm, kth)
+                        threshold, _ = torch.kthvalue(freq_select_norm.detach(), kth)
                     else:
                         threshold = 0
 
@@ -342,17 +344,12 @@ class MaskCompressDWT(EncoderDecoderPair):
                 freq_select_norm = freq_select_norm.unsqueeze(dim=-1)
                 freq_select_norm = freq_select_norm.unsqueeze(dim=-1)
 
-                # h_hard = h_list[0] * (1 - torch.round(freq_select_norm))
                 mask_hard = (1 - (freq_select_norm > threshold).float())
                 mask_soft = (1 - softmin_round(freq_select_norm, 0, 1, self.softmin_tau))
                 mask = mask_hard.detach() + mask_soft - mask_soft.detach()
-                h0 = h_list[0] * mask
-                h = [h0]
+                h_list[0] = h_list[0] * mask
 
-                for xh in h_list[1:]:
-                    h.append(xh)
-
-                x = self.compressDWT((ll, h), is_encoder=False)
+                x = self.compressDWT((ll, h_list), is_encoder=False)
                 return x
         else:  # eval
             if is_encoder:
@@ -488,23 +485,23 @@ class Transform(EncoderDecoderPair):
                 weight = self.transform_matrix.unsqueeze(-1)
                 weight = weight.unsqueeze(-1)
                 if self.norm_mode == 'sum':
-                    weight_norm = weight / weight.sum(dim=1)  # sum
+                    weight_norm = weight / weight.sum(dim=1, keepdim=True)  # sum
                 elif self.norm_mode == 'l1':
-                    weight_norm = weight / weight.abs().sum(dim=1)  # L1
+                    weight_norm = weight / weight.abs().sum(dim=1, keepdim=True)  # L1
                 elif self.norm_mode == 'l2':
-                    weight_norm = weight / (weight ** 2).sum(dim=1)  # L2
+                    weight_norm = weight / (weight ** 2).sum(dim=1, keepdim=True)  # L2
                 else:
                     weight_norm = weight
                 x_tr_de_w = F.conv2d(x, weight_norm.detach())
-                # x_tr_de_x = F.conv2d(x.detach(), weight_norm)
-                x_tr_de_x = F.conv2d(x, weight_norm)
+                x_tr_de_x = F.conv2d(x.detach(), weight_norm)
+                # x_tr_de_x = F.conv2d(x, weight_norm)
 
                 return x_tr_de_w, x_tr_de_x
             else:
                 weight = self.transform_matrix_reorder.unsqueeze(-1)
                 weight = weight.unsqueeze(-1)
                 x = F.conv2d(x, weight)
-                return x, x
+                return x, x.clone()
 
         else:
             if self.training:
@@ -522,11 +519,11 @@ class Transform(EncoderDecoderPair):
         """
         with torch.no_grad():
             if self.norm_mode == 'sum':
-                self.transform_matrix.data /= self.transform_matrix.sum(dim=1)  # sum
+                self.transform_matrix.data /= self.transform_matrix.sum(dim=1, keepdim=True)  # sum
             elif self.norm_mode == 'l1':
-                self.transform_matrix.data /= self.transform_matrix.abs().sum(dim=1)  # L1
+                self.transform_matrix.data /= self.transform_matrix.abs().sum(dim=1, keepdim=True)  # L1
             elif self.norm_mode == 'l2':
-                self.transform_matrix.data /= (self.transform_matrix ** 2).sum(dim=1)  # L2
+                self.transform_matrix.data /= (self.transform_matrix ** 2).sum(dim=1, keepdim=True)  # L2
             # self.inverse_matrix.data = torch.pinverse(self.transform_matrix)
         self.inverse_matrix.data = torch.inverse(self.transform_matrix)
 
@@ -652,7 +649,7 @@ class Compress(nn.Module):
     Returns:
         x, fm_transforms
     """
-    def __init__(self, compress, channel_num, rand_factor=0.):
+    def __init__(self, compress):
         super(Compress, self).__init__()
         self.compress = compress
 

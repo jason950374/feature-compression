@@ -124,7 +124,6 @@ def main():
     # maximum_fm = [11, 15.5, 14, 11.5, 8.5, 14, 11.5, 101]
 
     compress_list = compress_list_gen(maximum_fm, args.wavelet, args.bit)
-
     model.compress_replace(compress_list)
     utils.load(model, args)
 
@@ -141,8 +140,8 @@ def main():
     fm_hd = infer_result_handler.HandlerFm(print_fn=logging.info)
     # tr_hd = infer_result_handler.HandlerDCT_Fm(print_fn=logging.info, save=args.save, code_length_dict=code_length_dict)
     # tr_hd = infer_result_handler.HandlerDWT_Fm(print_fn=logging.info, save=args.save, code_length_dict=code_length_dict)
-    tr_hd = infer_result_handler.HandlerDWT_Fm(print_fn=logging.info, save=args.save, code_length_dict=code_length_dict)
-    # tr_hd = infer_result_handler.HandlerMaskedDWT_Fm(print_fn=logging.info, save=args.save, code_length_dict=code_length_dict)
+    # tr_hd = infer_result_handler.HandlerDWT_Fm(print_fn=logging.info, save=args.save, code_length_dict=code_length_dict)
+    tr_hd = infer_result_handler.HandlerMaskedDWT_Fm(print_fn=logging.info, save=args.save, code_length_dict=code_length_dict)
     # tr_hd = infer_result_handler.HandlerQuanti(print_fn=logging.info, code_length_dict=u_code_length_dict)
     # tr_hd = infer_result_handler.HandlerTrans(print_fn=logging.info)
     handler_list = [fm_hd, tr_hd, acc_hd]
@@ -151,7 +150,7 @@ def main():
 
     for handler in handler_list:
         handler.print_result()
-    '''
+
     for k in range(2, 6):
         logging.info("===========   {}   ===========".format(k))
         code_length_dict = utils.gen_signed_seg_dict(k, 2 ** (args.bit-1))
@@ -187,7 +186,7 @@ def compress_list_gen(maximum_fm, wavelet='db1', bit=8):
 
         seq = BypassSequential(*compress_seq)
         pair = DualPath(tr, seq)
-        compress_list.append(Compress(pair, channel[i]).cuda())
+        compress_list.append(Compress(pair).cuda())
 
     q_factor = maximum_fm[-1] / (2 ** bit - 1)
     q_table_dwt = torch.tensor([10 ** 6, 10 ** 6, 10 ** 6, 1], dtype=torch.get_default_dtype())
@@ -207,10 +206,10 @@ def compress_list_gen(maximum_fm, wavelet='db1', bit=8):
 
     seq = BypassSequential(*compress_seq)
     pair = DualPath(tr, seq)
-    compress_list.append(Compress(pair, channel[-1]).cuda())
+    compress_list.append(Compress(pair).cuda())
 
     return compress_list
-'''
+
 
 if __name__ == '__main__':
     main()

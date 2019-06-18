@@ -197,14 +197,15 @@ class ResNetStages(nn.Module):
         fm_transforms = []   # TODO clean up
         for indx, block in enumerate(self.layers):
             x = block(x)
-            feature_maps.append(x.cpu())
+            # feature_maps.append(x.cpu())
+            feature_maps.append(x)
             if self.compress is not None:
                 if type(self.compress) is list or type(self.compress) is tuple:
                     x_re, fm_transform = self.compress[indx](x)
                     # fm_transforms.append(self._to_cpu(fm_transform))
                     fm_transforms.append(fm_transform)
                 else:
-                    x_re, fm_transform = self.compress(x.detach())
+                    x_re, fm_transform = self.compress(x)
                     # fm_transforms.append(self._to_cpu(fm_transform))
                     fm_transforms.append(fm_transform)
                 x = x_re

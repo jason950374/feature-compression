@@ -26,22 +26,30 @@ class BasicBlock(nn.Module):
     """
     expansion = 1
 
-    def __init__(self, inplanes, planes, stride=1):
+    def __init__(self, inplanes, planes, stride=1, compress=None):
         super(BasicBlock, self).__init__()
         self.conv1 = conv3x3(inplanes, planes, stride)
         self.bn1 = nn.BatchNorm2d(planes)
         self.conv2 = conv3x3(planes, planes)
         self.bn2 = nn.BatchNorm2d(planes)
+        self.compress = compress
 
     def forward(self, x):
         out = self.conv1(x)
         out = self.bn1(out)
         out = F.relu(out, inplace=True)
+        fm_transform = None
 
+        if self.compress is not None:
+            out, fm_transform = self.compress(out)
+        feature_map = out
         out = self.conv2(out)
         out = self.bn2(out)
 
-        return out
+        return out, feature_map, fm_transform
+
+    def compress_replace_inblock(self, compress_new):
+        self.compress = compress_new
 
 
 class Bottleneck(nn.Module):
@@ -57,7 +65,7 @@ class Bottleneck(nn.Module):
     """
     expansion = 4
 
-    def __init__(self, inplanes, planes, stride=1):
+    def __init__(self, inplanes, planes, stride=1, compress=None):
         super(Bottleneck, self).__init__()
         self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1, bias=False)
         self.bn1 = nn.BatchNorm2d(planes)
@@ -66,6 +74,7 @@ class Bottleneck(nn.Module):
         self.conv3 = nn.Conv2d(planes, planes * self.expansion, kernel_size=1, bias=False)
         self.bn3 = nn.BatchNorm2d(planes * self.expansion)
         self.relu = nn.ReLU(inplace=True)
+        self.compress = compress  # TODO list???
 
     def forward(self, x):
         out = self.conv1(x)
@@ -80,6 +89,9 @@ class Bottleneck(nn.Module):
         out = self.bn3(out)
 
         return out
+
+    def compress_replace_inblock(self, compress_new):
+        self.compress = compress_new
 
 
 class ResNetBlock(nn.Module):
@@ -98,13 +110,16 @@ class ResNetBlock(nn.Module):
 
     def forward(self, x):
         identity = x
-        out = self.block(x)
+        out, feature_map_block, fm_transform = self.block(x)
         if self.downsample is not None:
             identity = self.downsample(x)
         out += identity
-        out = F.relu(out, inplace=True)
+        out = F.relu(out)
 
-        return out
+        return out, feature_map_block, fm_transform
+
+    def compress_replace_inblock(self, compress_new):
+        self.block.compress_replace_inblock(compress_new)
 
 
 class ResNetStages(nn.Module):
@@ -172,7 +187,7 @@ class ResNetStages(nn.Module):
         else:
             return x.cpu()
 
-    def compress_replace(self, compress_new):
+    def compress_replace_branch(self, compress_new):
         """
         If replace compress method, beware initialization of parameters in new compress method.
         A compress method must be pair of encoder and decoder
@@ -180,10 +195,17 @@ class ResNetStages(nn.Module):
              compress_new:  compress_new can be a tuple of encoder-decoder pair, or tuple of
             encoder list and decoder list
         """
-        self.compress = copy.deepcopy(compress_new)
+        self.compress = copy.deepcopy(compress_new)  # TODO check if need to be member
         if type(self.compress) is list or type(self.compress) is tuple:
             for idx, module in enumerate(self.compress):
                 self.add_module("compress" + str(idx), module)
+
+    def compress_replace_inblock(self, compress_new):
+        for idx, block in enumerate(self.layers):
+            if type(self.compress) is list or type(self.compress) is tuple:
+                block.compress_replace_inblock(compress_new[idx])
+            else:
+                block.compress_replace_inblock(copy.deepcopy(compress_new))
 
     def update(self):
         if type(self.compress) is list or type(self.compress) is tuple:
@@ -193,24 +215,27 @@ class ResNetStages(nn.Module):
             self.compress.update()
 
     def forward(self, x):
-        feature_maps = []  # TODO clean up
-        fm_transforms = []   # TODO clean up
+        feature_maps_branch = []  # TODO clean up
+        fm_transforms_branch = []   # TODO clean up
+        fm_transforms_block = []
+        feature_maps_block = []
         for indx, block in enumerate(self.layers):
-            x = block(x)
-            # feature_maps.append(x.cpu())
-            feature_maps.append(x)
+            x, feature_map_block, fm_transform_block = block(x)
+            feature_maps_block.append(feature_map_block)
+            if fm_transform_block is not None:
+                fm_transforms_block.append(fm_transform_block)
+
+            feature_maps_branch.append(x)
             if self.compress is not None:
                 if type(self.compress) is list or type(self.compress) is tuple:
                     x_re, fm_transform = self.compress[indx](x)
-                    # fm_transforms.append(self._to_cpu(fm_transform))
-                    fm_transforms.append(fm_transform)
+                    fm_transforms_branch.append(fm_transform)
                 else:
                     x_re, fm_transform = self.compress(x)
-                    # fm_transforms.append(self._to_cpu(fm_transform))
-                    fm_transforms.append(fm_transform)
+                    fm_transforms_branch.append(fm_transform)
                 x = x_re
 
-        return x, feature_maps, fm_transforms
+        return x, feature_maps_branch, fm_transforms_branch, feature_maps_block, fm_transforms_block
 
 
 class ResNetCifar(nn.Module):
@@ -247,16 +272,19 @@ class ResNetCifar(nn.Module):
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
-        x, feature_maps, fm_transform = self.stages(x)  # TODO clean up
+        # TODO clean up
+        x, feature_maps_branch, fm_transforms_branch, feature_maps_block, fm_transforms_block = self.stages(x)
         x = self.avgpool(x)
         x = x.view(x.size(0), -1)
         x = self.fc(x)
 
-        return x, feature_maps, fm_transform
+        return x, feature_maps_branch, fm_transforms_branch, feature_maps_block, fm_transforms_block
 
-    # TODO generalize
-    def compress_replace(self, compress_new):
-        self.stages.compress_replace(compress_new)
+    def compress_replace_branch(self, compress_new):
+        self.stages.compress_replace_branch(compress_new)
+
+    def compress_replace_inblock(self, compress_new):
+        self.stages.compress_replace_inblock(compress_new)
 
     def update(self):
         self.stages.update()
@@ -306,17 +334,20 @@ class ResNetImageNet(nn.Module):
         x = self.relu(x)
         x = self.maxpool(x)
 
-        x, feature_maps, fm_transform = self.stages(x)  # TODO clean up
+        # TODO clean up
+        x, feature_maps_branch, fm_transforms_branch, feature_maps_block, fm_transforms_block = self.stages(x)
 
         x = self.avgpool(x)
         x = x.view(x.size(0), -1)
         x = self.fc(x)
 
-        return x, feature_maps, fm_transform
+        return x, feature_maps_branch, fm_transforms_branch, feature_maps_block, fm_transforms_block
 
-    # TODO generalize
-    def compress_replace(self, compress_new):
-        self.stages.compress_replace(compress_new)
+    def compress_replace_branch(self, compress_new):
+        self.stages.compress_replace_branch(compress_new)
+
+    def compress_replace_inblock(self, compress_new):
+        self.stages.compress_replace_inblock(compress_new)
 
     def update(self):
         self.stages.update()

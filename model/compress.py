@@ -166,34 +166,34 @@ class CompressDWT(EncoderDecoderPair):
             self.register_buffer('q_table', q_table)
         self.level = level
         self.rand_factor = rand_factor
-        self.size = None
         self.DWT = my_f.DWT(J=level, wave=wave, mode='periodization', separable=False)
         self.IDWT = my_f.IDWT(wave=wave, mode='periodization', separable=False)
 
-    def forward(self, x, is_encoder=True):
+    def forward(self, x, quanti=True, is_encoder=True):
         if is_encoder:
             assert len(x.size()) == 4, "Dimension of x need to be 4, which corresponds to (N, C, H, W)"
-            self.size = x.size()
-            ll, xh = self.DWT(x)
+            ll, xh, size = self.DWT(x)
             ll = ll / self.q_table[-1]
-            ll = random_round(ll, self.rand_factor)
-            ll = ll.clamp(-2 ** (self.bit - 1), 2 ** (self.bit - 1) - 1)
+            if quanti:
+                ll = random_round(ll, self.rand_factor)
+                ll = ll.clamp(-2 ** (self.bit - 1), 2 ** (self.bit - 1) - 1)
             for i in range(self.level):
                 xh[i] = xh[i] / self.q_table[i]
-                xh[i] = random_round(xh[i], self.rand_factor)
-                xh[i] = xh[i].clamp(-2 ** (self.bit - 1), 2 ** (self.bit - 1) - 1)
+                if quanti:
+                    xh[i] = random_round(xh[i], self.rand_factor)
+                    xh[i] = xh[i].clamp(-2 ** (self.bit - 1), 2 ** (self.bit - 1) - 1)
 
-            return ll, xh
+            return ll, xh, size
 
         else:
-            assert len(x) == 2, "Must be tuple include LL and Hs"
-            ll, xh_org = x
+            assert len(x) == 3, "Must be tuple include LL, Hs and size"
+            ll, xh_org, size = x
             ll = ll * self.q_table[-1]
             xh = []
             for i in range(self.level):
                 xh.append(xh_org[i] * self.q_table[i])
 
-            x = self.IDWT((ll, xh), self.size)
+            x = self.IDWT((ll, xh, size))
 
             return x
 
@@ -317,14 +317,14 @@ class MaskCompressDWT(EncoderDecoderPair):
         self.channel_num = channel_num
         self.ratio = ratio
 
-    def forward(self, x, is_encoder=True):
+    def forward(self, x, quanti=True, is_encoder=True):
         if self.training or (self.ratio == 1):
             if is_encoder:
-                x = self.compressDWT(x, is_encoder=True)
+                x = self.compressDWT(x, quanti=quanti, is_encoder=True)
 
                 return x
             else:
-                ll, h_list = x
+                ll, h_list, size = x
 
                 # masking
                 freq_select_clamp = self.freq_select.clamp(0, 1)
@@ -349,7 +349,7 @@ class MaskCompressDWT(EncoderDecoderPair):
                 mask = mask_hard.detach() + mask_soft - mask_soft.detach()
                 h_list[0] = h_list[0] * mask
 
-                x = self.compressDWT((ll, h_list), is_encoder=False)
+                x = self.compressDWT((ll, h_list, size), is_encoder=False)
                 return x
         else:  # eval
             if is_encoder:
@@ -399,11 +399,12 @@ class QuantiUnsign(EncoderDecoderPair):
         self.q_factor = q_factor
         self.is_shift = is_shift
 
-    def forward(self, x, is_encoder=True):
+    def forward(self, x, quanti=True, is_encoder=True):
         if is_encoder:
             x /= self.q_factor
-            x = random_round(x)
-            x = x.clamp(0, 2 ** self.bit - 1)
+            if quanti:
+                x = random_round(x)
+                x = x.clamp(0, 2 ** self.bit - 1)
             if self.is_shift:
                 x = x - 2 ** (self.bit - 1)
             return x
@@ -423,7 +424,7 @@ class FtMapShiftNorm(EncoderDecoderPair):
     def __init__(self):
         super(FtMapShiftNorm, self).__init__()
 
-    def forward(self, x, is_encoder=True):
+    def forward(self, x, quanti=True, is_encoder=True):
         r"""
 
         Args:
@@ -579,10 +580,12 @@ class DualPath(nn.Sequential):
         if is_encoder:
             x_path_0, x_path_1 = self.separate(x)
             x_path_0 = self.module(x_path_0, is_encoder=True)
-            x_path_1 = self.module(x_path_1, is_encoder=True)
+            # x_path_1 = self.module(x_path_1, quanti=(not self.training), is_encoder=True)
+            x_path_1 = self.module(x_path_1, quanti=True, is_encoder=True)
 
             return x_path_0, x_path_1
         else:
+            x, _ = x
             x = self.module(x, is_encoder=False)  # TODO only one pass?
             x = self.separate(x, is_encoder=False)
             return x
@@ -613,11 +616,11 @@ class BypassSequential(nn.Sequential):
                 assert isinstance(module, EncoderDecoderPair), "BypassSequential only accept EncoderDecoderPair"
                 self.add_module(str(idx), module)
 
-    def forward(self, x, is_encoder=True):
+    def forward(self, x, quanti=True, is_encoder=True):
         if is_encoder:
             bypass_stack = []
             for module in self._modules.values():
-                x = module(x, is_encoder=True)
+                x = module(x, quanti, is_encoder=True)
                 if module.is_bypass:
                     bypass = x[1]
                     x = x[0]
@@ -655,13 +658,9 @@ class Compress(nn.Module):
 
     def forward(self, x):
         fm_transforms = self.compress(x, is_encoder=True)
-        # TODO no!!!!!!!!!!!!!!!!!! too ugly!!!!!!!!!!!!!!!!!!
-        fm_transforms_path_0, fm_transforms_path_1 = fm_transforms
-        fm_transforms_path_1, _ = fm_transforms_path_1
+        x = self.compress(fm_transforms, is_encoder=False)
 
-        x = self.compress(fm_transforms_path_0, is_encoder=False)
-
-        return x, fm_transforms_path_1
+        return x, fm_transforms[0]  # [1][0] # TODO ugly
 
     def update(self):
         self.compress.update()

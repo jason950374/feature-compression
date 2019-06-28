@@ -300,16 +300,25 @@ def afb2d_nonsep(x, filts, mode='zero'):
         else:
             filts = prep_filt_afb2d_nonsep(
                 filts[0], filts[1], filts[2], filts[3], device=x.device)
+
     f = torch.cat([filts] * C, dim=0)
     Ly = f.size(2)
     Lx = f.size(3)
 
     if mode == 'periodization' or mode == 'per':
         if x.shape[2] % 2 == 1:
-            x = torch.cat((x, x[:, :, -1:]), dim=2)
+            pad_odd = torch.cat((x[:, :, -Ly//2:],
+                             torch.zeros_like(x[:, :, :1]),
+                             x[:, :, :Ly//2 - 1]), dim=2) * filts[-1, 0, :, :1]
+            pad_odd = -pad_odd.sum(dim=2, keepdim=True) / filts[-1, 0, Ly//2, :1]
+            x = torch.cat((x, pad_odd), dim=2)
             Ny += 1
         if x.shape[3] % 2 == 1:
-            x = torch.cat((x, x[:, :, :, -1:]), dim=3)
+            pad_odd = torch.cat((x[:, :, :, -Ly // 2:],
+                                 torch.zeros_like(x[:, :, :, :1]),
+                                 x[:, :, :, :Ly // 2 - 1]), dim=3) * filts[-1, 0, 0, :]
+            pad_odd = -pad_odd.sum(dim=3, keepdim=True) / filts[-1, 0, Ly // 2, :1]
+            x = torch.cat((x, pad_odd), dim=3)
             Nx += 1
         pad = (Ly - 1, Lx - 1)
         stride = (2, 2)

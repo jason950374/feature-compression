@@ -62,9 +62,10 @@ class HistMeter:
         assert (((in_stream % 1) >= (1 - HistMeter.eps)) | ((in_stream % 1) < HistMeter.eps)).min(), \
             "in_stream need to be integers"
         cnt = 0
-        if len(in_stream.size()) > 1:
+        '''if len(in_stream.size()) > 1:
             in_stream = in_stream.view(-1)
-        size = in_stream.size(0)
+        size = in_stream.size(0)'''
+        size = element_cnt(in_stream)
 
         for code in self.hist:
             match = (in_stream < (code + HistMeter.eps)) & (in_stream >= (code - HistMeter.eps))
@@ -137,3 +138,10 @@ class HistMeter:
                     hist.append(0)
 
             plt_fn.bar(codes, hist, width=1)
+
+
+def element_cnt(x):
+    cnt = 1
+    for s in x.size():
+        cnt *= s
+    return cnt

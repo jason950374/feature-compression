@@ -477,7 +477,7 @@ def dwt_channel_weighted_loss(x, channel_weight):
     """
     loss = 0
     for x_layer, channel_weight_layer in zip(x, channel_weight):
-        _, xh = x_layer
+        _, xh, _ = x_layer
         # match dim
         channel_weight_layer = channel_weight_layer.unsqueeze(dim=-1)
         channel_weight_layer = channel_weight_layer.unsqueeze(dim=-1)
@@ -558,7 +558,8 @@ def freq_select2channel_weight(freq_select, ratio=0.5, tau=5):
         else:
             kthvalue = 0
         # return F.leaky_relu(((freq_select - kthvalue) * tau).tanh())
-        return F.relu(((freq_select - kthvalue) * tau).tanh())
+        return ((freq_select - kthvalue) * tau).tanh()
+        # return F.relu(((freq_select - kthvalue) * tau).tanh())
 
 
 if __name__ == '__main__':

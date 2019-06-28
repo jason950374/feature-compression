@@ -74,6 +74,7 @@ class DWTForward(nn.Module):
         """
         yh = []
         ll = x
+        size = (x.size(-2), x.size(-1))
 
         # Do a multilevel transform
         for j in range(self.J):
@@ -89,7 +90,7 @@ class DWTForward(nn.Module):
             ll = y[:, :, 0].contiguous()
             yh.append(y[:, :, 1:].contiguous())
 
-        return ll, yh
+        return ll, yh, size
 
 
 class DWTInverse(nn.Module):
@@ -128,7 +129,7 @@ class DWTInverse(nn.Module):
         self.mode = mode
         self.separable = separable
 
-    def forward(self, coeffs, out_shape=None):
+    def forward(self, coeffs):
         """
         Args:
             coeffs (yl, yh): tuple of lowpass and bandpass coefficients, where:
@@ -148,7 +149,7 @@ class DWTInverse(nn.Module):
             Can have None for any of the highpass scales and will treat the
             values as zeros (not in an efficient way though).
         """
-        yl, yh = coeffs
+        yl, yh, size = coeffs
         ll = yl
 
         # Do a multilevel inverse transform
@@ -171,10 +172,9 @@ class DWTInverse(nn.Module):
                 ll = lowlevel.sfb2d_nonsep(c, self.h, mode=self.mode)
 
         # 'Unpad' added dimensions
-        if out_shape is not None:
-            if ll.shape[-2] > out_shape[-2]:
-                ll = ll[..., :-1, :]
-            if ll.shape[-1] > out_shape[-1]:
-                ll = ll[..., :-1]
+        if ll.shape[-2] > size[-2]:
+            ll = ll[..., :-1, :]
+        if ll.shape[-1] > size[-1]:
+            ll = ll[..., :-1]
 
         return ll

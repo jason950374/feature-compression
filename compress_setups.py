@@ -61,8 +61,8 @@ def compress_list_gen_branch(channel, maximum_fm, wavelet='db1', bit=8, norm_mod
         q_table_dwt = q_table_dwt * 255 / maximum_fm[i]
 
         # c = quant(bit, q_factor)
-        c = dwt(q_table_dwt, wavelet, bit, q_factor)
-        # c = with_mask(channel[i], q_table_dwt, wavelet, bit, q_factor, norm_mode, retain_ratio, tau_mask)
+        # c = dwt(q_table_dwt, wavelet, bit, q_factor)
+        c = with_mask(channel[i], q_table_dwt, wavelet, bit, q_factor, norm_mode, retain_ratio, tau_mask)
         compress_list.append(c)
 
     q_factor = maximum_fm[-1] / (2 ** bit - 1)
@@ -73,8 +73,8 @@ def compress_list_gen_branch(channel, maximum_fm, wavelet='db1', bit=8, norm_mod
     q_table_dwt = q_table_dwt * 255 / maximum_fm[-1]
 
     # c = quant(bit, q_factor)
-    c = dwt(q_table_dwt, wavelet, bit, q_factor, shift=False)
-    # c = with_mask(channel[-1], q_table_dwt, 'haar', bit, q_factor, norm_mode, retain_ratio, tau_mask, shift=False)
+    # c = dwt(q_table_dwt, wavelet, bit, q_factor, shift=False)
+    c = with_mask(channel[-1], q_table_dwt, 'haar', bit, q_factor, norm_mode, retain_ratio, tau_mask, shift=False)
     compress_list.append(c)
 
     return compress_list

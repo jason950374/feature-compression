@@ -660,7 +660,7 @@ class Compress(nn.Module):
         fm_transforms = self.compress(x, is_encoder=True)
         x = self.compress(fm_transforms, is_encoder=False)
 
-        return x, fm_transforms[0]  # [1][0] # TODO ugly
+        return x, fm_transforms[1][0] # TODO ugly
 
     def update(self):
         self.compress.update()

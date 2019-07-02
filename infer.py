@@ -143,9 +143,9 @@ def main():
                                                   norm_mode=args.norm_mode,
                                                   retain_ratio=args.retainRatio)
 
-    utils.load(model, args)
     model.compress_replace_branch(compress_list_branch)
-    model.compress_replace_inblock(compress_list_block)
+    utils.load(model, args)
+    # model.compress_replace_inblock(compress_list_block)
 
     '''
     for compress in model.stages.compress:
@@ -162,8 +162,10 @@ def main():
     acc_hd = infer_result_handler.HandlerAcc(print_fn=logging.info)
     fm_hd = infer_result_handler.HandlerFm(print_fn=logging.info)
     # tr_hd = infer_result_handler.HandlerDCT_Fm(print_fn=logging.info, save=args.save, code_length_dict=code_length_dict)
-    tr_hd = infer_result_handler.HandlerDWT_Fm(print_fn=logging.info, save=args.save, code_length_dict=code_length_dict)
-    # tr_hd = infer_result_handler.HandlerMaskedDWT_Fm(print_fn=logging.info, save=args.save, code_length_dict=code_length_dict)
+    # tr_hd = infer_result_handler.HandlerDWT_Fm(print_fn=logging.info, save=args.save, code_length_dict=code_length_dict,
+    #                                           is_inblock=True)
+    tr_hd = infer_result_handler.HandlerMaskedDWT_Fm(print_fn=logging.info, save=args.save,
+                                                     code_length_dict=code_length_dict,is_inblock=False)
     # tr_hd = infer_result_handler.HandlerQuanti(print_fn=logging.info, code_length_dict=u_code_length_dict)
     # tr_hd = infer_result_handler.HandlerTrans(print_fn=logging.info)
     # handler_list = [fm_hd, tr_hd, acc_hd]

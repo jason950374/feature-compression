@@ -259,7 +259,7 @@ class HandlerTrans(InferResultHandler):
 
 class HandlerDWT_Fm(InferResultHandler):
     def __init__(self, print_fn=print, save="", code_length_dict=None, print_sparsity=True, print_range_all=False,
-                 print_range_layer=True):
+                 print_range_layer=True, is_inblock=False, is_branch=True):
         self.states_updated = False
         self.zero_cnt = 0
         self.size_flat = 0
@@ -272,6 +272,8 @@ class HandlerDWT_Fm(InferResultHandler):
         self.hist_meters_block = []
         self.max_ch = []
         self.min_ch = []
+        self.is_inblock = is_inblock
+        self.is_branch = is_branch
 
         # IO
         self.print_fn = print_fn
@@ -286,21 +288,21 @@ class HandlerDWT_Fm(InferResultHandler):
 
     def update_batch(self, result, inputs=None):
         _, _, fm_transforms_branch, _, fm_transforms_block = result
-        assert len(fm_transforms_branch) != 0, "Nothing in fm_transforms_branch!!!"
-        assert len(fm_transforms_block) != 0, "Nothing in fm_transforms_block!!!"
+        if self.is_branch:
+            assert len(fm_transforms_branch) != 0, "Nothing in fm_transforms_branch!!!"
+            for layer_num, fm_transform_branch in enumerate(fm_transforms_branch):
+                self._update_dwt(fm_transform_branch, layer_num, self.max_mins_branch, self.hist_meters_branch)
+            for layer_num, meter in enumerate(self.max_mins_branch):
+                self.max = max(self.max, meter.max)
+                self.min = min(self.min, meter.min)
+        if self.is_inblock:
+            assert len(fm_transforms_block) != 0, "Nothing in fm_transforms_block!!!"
+            for layer_num, fm_transform_block in enumerate(fm_transforms_block):
+                self._update_dwt(fm_transform_block, layer_num, self.max_mins_block, self.hist_meters_block)
+            for layer_num, meter in enumerate(self.max_mins_block):
+                self.max = max(self.max, meter.max)
+                self.min = min(self.min, meter.min)
         self.states_updated = False
-
-        for layer_num, (fm_transform_branch, fm_transform_block) \
-                in enumerate(zip(fm_transforms_branch, fm_transforms_block)):
-            self._update_dwt(fm_transform_branch, layer_num, self.max_mins_branch, self.hist_meters_branch)
-            self._update_dwt(fm_transform_block, layer_num, self.max_mins_block, self.hist_meters_block)
-
-        for layer_num, meter in enumerate(self.max_mins_branch):
-            self.max = max(self.max, meter.max)
-            self.min = min(self.min, meter.min)
-        for layer_num, meter in enumerate(self.max_mins_block):
-            self.max = max(self.max, meter.max)
-            self.min = min(self.min, meter.min)
 
     def _update_dwt(self, feature_map_dwt, layer_num, max_mins, hist_meters):
         assert type(feature_map_dwt) is tuple, "feature_map_dwt is not tuple, make sure it's DWT"
@@ -353,27 +355,16 @@ class HandlerDWT_Fm(InferResultHandler):
 
     def print_result(self):
         if not self.states_updated:
-            assert self.hist_meters_branch is not None, "Please update before print"
-            assert self.hist_meters_block is not None, "Please update before print"
             self.code_len = 0
             figure = plt.figure()
             ax = figure.add_subplot(1, 1, 1)
 
-            for layer_num, hist_layer in enumerate(self.hist_meters_branch):
-                xl_hist, xh_hists = hist_layer
-                xl_hist.plt_hist(plt_fn=ax)
-                figure.savefig('{}/Layer{}_XL.png'.format(self.save, layer_num))
-                ax.cla()
+            if self.is_branch:
+                self._update_after_config(figure, ax, self.hist_meters_branch, 'branch_')
 
-                if self.code_length_dict is not None:
-                    self.code_len += xl_hist.get_bit_cnt(self.code_length_dict)
+            if self.is_inblock:
+                self._update_after_config(figure, ax, self.hist_meters_block, 'block_')
 
-                for i, xh_hist in enumerate(xh_hists):
-                    xh_hist.plt_hist(plt_fn=ax)
-                    figure.savefig('{}/Layer{}_XH_{}.png'.format(self.save, layer_num, i))
-                    ax.cla()
-                    if self.code_length_dict is not None:
-                        self.code_len += xh_hist.get_bit_cnt(self.code_length_dict)
             plt.close(figure)
 
             self.states_updated = True
@@ -405,6 +396,24 @@ class HandlerDWT_Fm(InferResultHandler):
                                                        self.size_flat * 8 / self.code_len))
         self.print_fn("==============================================================")
 
+    def _update_after_config(self, figure, ax, hist_list, prefix=''):
+        assert hist_list is not None, "Please update before print"
+        for layer_num, hist_layer in enumerate(hist_list):
+            xl_hist, xh_hists = hist_layer
+            xl_hist.plt_hist(plt_fn=ax)
+            figure.savefig('{}/{}_Layer{}_XL.png'.format(self.save, prefix, layer_num))
+            ax.cla()
+
+            if self.code_length_dict is not None:
+                self.code_len += xl_hist.get_bit_cnt(self.code_length_dict)
+
+            for i, xh_hist in enumerate(xh_hists):
+                xh_hist.plt_hist(plt_fn=ax)
+                figure.savefig('{}/{}_Layer{}_XH_{}.png'.format(self.save, prefix, layer_num, i))
+                ax.cla()
+                if self.code_length_dict is not None:
+                    self.code_len += xh_hist.get_bit_cnt(self.code_length_dict)
+
     def _print_sparsity(self):
         self.print_fn("fm_transforms == 0: {}".format(self.zero_cnt))
         self.print_fn("fm_transforms size: {}".format(self.size_flat))
@@ -427,7 +436,7 @@ class HandlerDWT_Fm(InferResultHandler):
 
 class HandlerMaskedDWT_Fm(InferResultHandler):
     def __init__(self, print_fn=print, save="", code_length_dict=None, print_sparsity=True, print_range_all=False,
-                 print_range_layer=True):
+                 print_range_layer=True, is_inblock=False, is_branch=True):
         self.states_updated = False
         self.zero_cnt = 0
         self.size_flat = 0
@@ -459,94 +468,60 @@ class HandlerMaskedDWT_Fm(InferResultHandler):
             assert type(feature_map_batch) is tuple, "fm_transform_batch is not tuple, make sure it's DWT"
             x_dwt_remain, x_dwt_masked = feature_map_batch
 
-            XL, XH, size_cur = x_dwt_remain
-            XL_cuda = XL.cuda()
+            self._update_dwt(x_dwt_remain, layer_num, self.max_mins, self.hist_meters, masked=False)
+            self._update_dwt(x_dwt_masked, layer_num, self.max_mins, self.hist_meters, masked=True)
 
-            if len(self.max_mins) <= layer_num:
-                self.max_mins.append(MaxMinMeter())
+    def _update_dwt(self, feature_map_dwt, layer_num, max_mins, hist_meters, masked=False):
+        assert type(feature_map_dwt) is tuple, "feature_map_dwt is not tuple, make sure it's DWT"
 
-            if len(self.hist_meters) <= layer_num:
-                self.hist_meters.append((HistMeter(self.code_length_dict), []))
-
-            self.zero_cnt += (XL_cuda.abs() < 10 ** -10).sum().item()
-            self.size_flat += element_cnt(XL)
-            self.max_mins[layer_num].update(XL_cuda)
-            self.hist_meters[layer_num][0].update(XL_cuda)
-
-            for i, xh in enumerate(XH):
-                xh_cuda = xh.cuda()
-                lh, hl, hh = torch.unbind(xh_cuda, dim=2)
-                if (xh.size(-1) * 2) != size_cur[-1]:
-                    assert (xh.size(-1) * 2) - 1 == size_cur[-1], \
-                        "Size mismatch {}, {}".format((xh.size(-1) * 2) - 1, size_cur[-1])
-
-                    assert hl[..., -1].abs().max() < 1e-10, "Wrong padding"
-                    hl = hl[..., :-1]
-                    assert hh[..., -1].abs().max() < 1e-10, "Wrong padding"
-                    hh = hh[..., :-1]
-                if (xh.size(-2) * 2) != size_cur[-2]:
-                    assert (xh.size(-2) * 2) - 1 == size_cur[-2], \
-                        "Size mismatch {}, {}".format((xh.size(-1) * 2) - 1, size_cur[-2])
-
-                    assert lh[..., -1, :].abs().max() < 1e-10, "Wrong padding"
-                    lh = lh[..., :-1, :]
-                    assert hh[..., -1, :].abs().max() < 1e-10, "Wrong padding"
-                    hh = hh[..., :-1, :]
-
-                for h in [lh, hl, hh]:
-                    self.zero_cnt += (h.abs() < 10 ** -10).sum().item()
-                    self.size_flat += element_cnt(h)
-                    self.max_mins[layer_num].update(h)
-
-                    if len(self.hist_meters[layer_num][1]) <= i:
-                        self.hist_meters[layer_num][1].append(HistMeter(self.code_length_dict))
-
-                    self.hist_meters[layer_num][1][i].update(h)
-
-                size_cur = (xh.size(-2), xh.size(-1))
-
-            XL, XH, _ = x_dwt_masked
-            XL_cuda = XL.cuda()
-
-            if len(self.max_mins) <= layer_num:
-                self.max_mins.append(MaxMinMeter())
-
-            if len(self.hist_meters) <= layer_num:
-                self.hist_meters.append((HistMeter(self.code_length_dict), []))
-
-            self.zero_cnt += (XL_cuda.abs() < 10 ** -10).sum().item()
-            self.size_flat += element_cnt(XL)
-            self.max_mins[layer_num].update(XL_cuda)
-            self.hist_meters[layer_num][0].update(XL_cuda)
-
+        XL, XH, size_cur = feature_map_dwt
+        if masked:
             size_cur = (XH[0].size(-2), XH[0].size(-1))
-            for i, xh in enumerate(XH[1:]):
-                xh_cuda = xh.cuda()
-                lh, hl, hh = torch.unbind(xh_cuda, dim=2)
-                if (xh.size(-1) * 2) != size_cur[-1]:
-                    assert (xh.size(-1) * 2) - 1 == size_cur[-1], \
-                        "Size mismatch {}, {}".format((xh.size(-1) * 2) - 1, size_cur[-1])
+            XH = XH[1:]
+        XL_cuda = XL.cuda()
 
-                    assert hl[..., -1].abs().max() < 1e-10, "Wrong padding"
-                    hl = hl[..., :-1]
-                    assert hh[..., -1].abs().max() < 1e-10, "Wrong padding"
-                    hh = hh[..., :-1]
-                if (xh.size(-2) * 2) != size_cur[-2]:
-                    assert (xh.size(-2) * 2) - 1 == size_cur[-2], \
-                        "Size mismatch {}, {}".format((xh.size(-1) * 2) - 1, size_cur[-2])
+        if len(max_mins) <= layer_num:
+            max_mins.append(MaxMinMeter())
 
-                    assert lh[..., -1, :].abs().max() < 1e-10, "Wrong padding"
-                    lh = lh[..., :-1, :]
-                    assert hh[..., -1, :].abs().max() < 1e-10, "Wrong padding"
-                    hh = hh[..., :-1, :]
+        if len(hist_meters) <= layer_num:
+            hist_meters.append((HistMeter(self.code_length_dict), []))
 
-                for h in [lh, hl, hh]:
-                    self.zero_cnt += (h.abs() < 10 ** -10).sum().item()
-                    self.size_flat += element_cnt(h)
-                    self.max_mins[layer_num].update(h)
-                    self.hist_meters[layer_num][1][i].update(h)
+        self.zero_cnt += (XL_cuda.abs() < 10 ** -10).sum().item()
+        self.size_flat += element_cnt(XL)
+        max_mins[layer_num].update(XL_cuda)
+        hist_meters[layer_num][0].update(XL_cuda)
 
-                size_cur = (xh.size(-2), xh.size(-1))
+        for i, xh in enumerate(XH):
+            xh_cuda = xh.cuda()
+            lh, hl, hh = torch.unbind(xh_cuda, dim=2)
+            if (xh.size(-1) * 2) != size_cur[-1]:
+                assert (xh.size(-1) * 2) - 1 == size_cur[-1], \
+                    "Size mismatch {}, {}".format((xh.size(-1) * 2) - 1, size_cur[-1])
+
+                assert hl[..., -1].abs().max() < 1e-10, "Wrong padding"
+                hl = hl[..., :-1]
+                assert hh[..., -1].abs().max() < 1e-10, "Wrong padding"
+                hh = hh[..., :-1]
+            if (xh.size(-2) * 2) != size_cur[-2]:
+                assert (xh.size(-2) * 2) - 1 == size_cur[-2], \
+                    "Size mismatch {}, {}".format((xh.size(-1) * 2) - 1, size_cur[-2])
+
+                assert lh[..., -1, :].abs().max() < 1e-10, "Wrong padding"
+                lh = lh[..., :-1, :]
+                assert hh[..., -1, :].abs().max() < 1e-10, "Wrong padding"
+                hh = hh[..., :-1, :]
+
+            for h in [lh, hl, hh]:
+                self.zero_cnt += (h.abs() < 10 ** -10).sum().item()
+                self.size_flat += element_cnt(h)
+                max_mins[layer_num].update(h)
+
+                if len(hist_meters[layer_num][1]) <= i:
+                    hist_meters[layer_num][1].append(HistMeter(self.code_length_dict))
+
+                hist_meters[layer_num][1][i].update(h)
+
+            size_cur = (xh.size(-2), xh.size(-1))
 
     def print_result(self):
         if not self.states_updated:
@@ -555,27 +530,11 @@ class HandlerMaskedDWT_Fm(InferResultHandler):
                     self.max = max(self.max, meter.max)
                     self.min = min(self.min, meter.min)
 
-            assert self.hist_meters is not None, "Please update before print"
             self.code_len = 0
             figure = plt.figure()
             ax = figure.add_subplot(1, 1, 1)
 
-            for layer_num, hist_layer in enumerate(self.hist_meters):
-                xl_hist, xh_hists = hist_layer
-                xl_hist.plt_hist(plt_fn=ax)
-                figure.savefig('{}/Layer{}_XL.png'.format(self.save, layer_num))
-                ax.cla()
-
-                if self.code_length_dict is not None:
-                    self.code_len += xl_hist.get_bit_cnt(self.code_length_dict)
-
-                for i, xh_hist in enumerate(xh_hists):
-                    xh_hist.plt_hist(plt_fn=ax)
-                    figure.savefig('{}/Layer{}_XH_{}.png'.format(self.save, layer_num, i))
-                    ax.cla()
-                    if self.code_length_dict is not None:
-                        self.code_len += xh_hist.get_bit_cnt(self.code_length_dict)
-            plt.close(figure)
+            self._update_after_config(figure, ax, self.hist_meters)
 
             self.states_updated = True
 
@@ -593,6 +552,24 @@ class HandlerMaskedDWT_Fm(InferResultHandler):
         self.print_fn("Compress rate {}/{}= {}".format(self.size_flat * 8, self.code_len,
                                                        self.size_flat * 8 / self.code_len))
         self.print_fn("==============================================================")
+
+    def _update_after_config(self, figure, ax, hist_list, prefix=''):
+        assert hist_list is not None, "Please update before print"
+        for layer_num, hist_layer in enumerate(hist_list):
+            xl_hist, xh_hists = hist_layer
+            xl_hist.plt_hist(plt_fn=ax)
+            figure.savefig('{}/{}_Layer{}_XL.png'.format(self.save, prefix, layer_num))
+            ax.cla()
+
+            if self.code_length_dict is not None:
+                self.code_len += xl_hist.get_bit_cnt(self.code_length_dict)
+
+            for i, xh_hist in enumerate(xh_hists):
+                xh_hist.plt_hist(plt_fn=ax)
+                figure.savefig('{}/{}_Layer{}_XH_{}.png'.format(self.save, prefix, layer_num, i))
+                ax.cla()
+                if self.code_length_dict is not None:
+                    self.code_len += xh_hist.get_bit_cnt(self.code_length_dict)
 
     def set_config(self, code_length_dict=None, print_sparsity=True, print_range_all=False,
                    print_range_layer=True):

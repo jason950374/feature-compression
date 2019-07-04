@@ -127,21 +127,21 @@ def main():
     print([maxMinMeter.min for maxMinMeter in maximum_fm_block])'''
 
     # quick test for this ckpts: cifar10_resnet20_0409_184724
-    maximum_fm_branch = [5.2, 6.7, 5.3, 5.8, 6.7, 7.6, 4.6, 5.7, 36]
-    maximum_fm_block = [2.7, 2.9, 2.7, 2.5, 2.3, 2.3, 2.7, 2.7, 3.4]
-    channel = [16, 16, 16, 32, 32, 32, 64, 64, 64]
+    # maximum_fm_branch = [5.2, 6.7, 5.3, 5.8, 6.7, 7.6, 4.6, 5.7, 36]
+    # maximum_fm_block = [2.7, 2.9, 2.7, 2.5, 2.3, 2.3, 2.7, 2.7, 3.4]
+    # channel = [16, 16, 16, 32, 32, 32, 64, 64, 64]
 
     # quick test for pretrain resnet18
-    # maximum_fm = [11, 15.5, 14, 11.5, 8.5, 14, 11.5, 101]
-    # channel = [64, 64, 128, 128, 256, 256, 512, 512]
+    maximum_fm_branch = [11, 15.5, 14, 11.5, 8.5, 14, 11.5, 101]
+    channel = [64, 64, 128, 128, 256, 256, 512, 512]
 
     compress_list_branch = compress_list_gen_branch(channel, maximum_fm_branch, args.wavelet, args.bit,
                                                     norm_mode=args.norm_mode,
                                                     retain_ratio=args.retainRatio)
 
-    compress_list_block = compress_list_gen_block(channel, maximum_fm_block, args.wavelet, args.bit,
-                                                  norm_mode=args.norm_mode,
-                                                  retain_ratio=args.retainRatio)
+    # compress_list_block = compress_list_gen_block(channel, maximum_fm_block, args.wavelet, args.bit,
+    #                                               norm_mode=args.norm_mode,
+    #                                               retain_ratio=args.retainRatio)
 
     model.compress_replace_branch(compress_list_branch)
     utils.load(model, args)
@@ -165,7 +165,7 @@ def main():
     # tr_hd = infer_result_handler.HandlerDWT_Fm(print_fn=logging.info, save=args.save, code_length_dict=code_length_dict,
     #                                           is_inblock=True)
     tr_hd = infer_result_handler.HandlerMaskedDWT_Fm(print_fn=logging.info, save=args.save,
-                                                     code_length_dict=code_length_dict,is_inblock=False)
+                                                     code_length_dict=code_length_dict, is_inblock=False)
     # tr_hd = infer_result_handler.HandlerQuanti(print_fn=logging.info, code_length_dict=u_code_length_dict)
     # tr_hd = infer_result_handler.HandlerTrans(print_fn=logging.info)
     # handler_list = [fm_hd, tr_hd, acc_hd]

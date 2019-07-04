@@ -1,6 +1,7 @@
 import torch
 from functional.dwt import DWTForward, DWTInverse
 from functional.dwt.lowlevel import *
+import time
 
 if __name__ == '__main__':
     torch.set_default_dtype(torch.float64)
@@ -32,28 +33,24 @@ if __name__ == '__main__':
         error = torch.abs(H - H_nonsep)
         assert error.max().item() < 1e-10, (error.mean(), error.max())'''
 
-    x = torch.Tensor(1, 1, 7, 7).cuda()
-    x.normal_(0, 1) * 255
-    '''
-    x = torch.Tensor([[[[0, 0, 0, 0, 0, 0, 0],
-                        [0, 0, 0, 0, 0, 0, 0],
-                        [0, 0, 0, 0, 0, 0, 0],
-                        [0, 0, 0, 0, 0, 0, 0],
-                        [0, 0, 0, 0, 0, 0, 0],
-                        [0, 0, 0, 0, 0, 0, 0],
-                        [0, 0, 0, 0, 0, 0, 1]]]]).cuda()'''
-    # dwt = DWTForward(J=2, wave='db2', mode='per', separable=True).cuda()
-    dwt = DWTForward(J=3, wave='db2', mode='per', separable=False).cuda()
-    # dwti = DWTInverse(wave='db2', mode='per', separable=True).cuda()
-    dwti = DWTInverse(wave='db2', mode='per', separable=False).cuda()
-    X = dwt(x)
-    x_reconstruct = dwti(X)
-    error = torch.abs(x - x_reconstruct)
-    assert error.max().item() < 1e-10, (error.mean(), error.max())
-    print(X[0].size())
-    print(X[1][0].size())
-    print(X[1][1].size())
-    print(X[1][2].size())
+    # dwt = DWTForward(J=3, wave='db3', mode='per', separable=True).cuda()
+    dwt = DWTForward(J=3, wave='db1', mode='per', separable=True).cuda()
+    dwt2 = DWTForward(J=3, wave='db1', mode='per', separable=False).cuda()
+    dwti = DWTInverse(wave='db1', mode='per', separable=True).cuda()
+    # dwti = DWTInverse(wave='db2', mode='per', separable=False).cuda()
 
+    x = torch.Tensor(1, 64, 564, 698).cuda()
+    x.normal_(0, 1) * 255
+
+    begin = time.time()
+    X = dwt(x)
+    X2 = dwt2(x)
+
+    x_reconstruct = dwti(X)
+    x_reconstruct2 = dwti(X2)
+    error = torch.abs(x - x_reconstruct)
+    error2 = torch.abs(x - x_reconstruct2)
+    assert error.max().item() < 1e-10, (error.mean(), error.max())
+    assert error2.max().item() < 1e-10, (error2.mean(), error2.max())
 
 

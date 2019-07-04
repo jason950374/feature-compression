@@ -44,7 +44,8 @@ class HandlerAcc(InferResultHandler):
 
 
 class HandlerFm(InferResultHandler):
-    def __init__(self, print_fn=print, print_sparsity=True, print_range_all=False, print_range_layer=True):
+    def __init__(self, print_fn=print, print_sparsity=True, print_range_all=False, print_range_layer=True,
+                 is_inblock=False, is_branch=True):
         # State
         self.states_updated = False
         self.zero_cnt = 0
@@ -53,6 +54,8 @@ class HandlerFm(InferResultHandler):
         self.max_mins_block = []
         self.max = -2 ** 40
         self.min = 2 ** 40
+        self.is_inblock = is_inblock
+        self.is_branch = is_branch
 
         # IO
         self.print_fn = print_fn
@@ -63,22 +66,28 @@ class HandlerFm(InferResultHandler):
         self.is_print_range_layer = print_range_layer
 
     def update_batch(self, result, inputs=None):
-        _, feature_maps_branch, _, feature_maps_block, _ = result
-        for layer_num, (feature_map_branch, feature_map_block) in \
-                enumerate(zip(feature_maps_branch, feature_maps_block)):
-            feature_map_branch_cuda = feature_map_branch.cuda()
-            feature_map_block_cuda = feature_map_block.cuda()
-            self.zero_cnt += (feature_map_branch_cuda.abs() < 10 ** -10).sum().item()
-            self.zero_cnt += (feature_map_block_cuda.abs() < 10 ** -10).sum().item()
-            self.size_flat += element_cnt(feature_map_branch)
-            self.size_flat += element_cnt(feature_map_block)
-            if len(self.max_mins_branch) <= layer_num:
-                self.max_mins_branch.append(MaxMinMeter())
-                self.max_mins_block.append(MaxMinMeter())
-            self.max_mins_branch[layer_num].update(feature_map_branch_cuda)
-            self.max_mins_block[layer_num].update(feature_map_block_cuda)
+        with torch.no_grad():
+            _, feature_maps_branch, _, feature_maps_block, _ = result
+            if self.is_branch:
+                for layer_num, feature_map_branch in \
+                        enumerate(feature_maps_branch):
+                    feature_map_branch_cuda = feature_map_branch.cuda()
+                    self.zero_cnt += (feature_map_branch_cuda.abs() < 10 ** -10).sum().item()
+                    self.size_flat += element_cnt(feature_map_branch)
+                    if len(self.max_mins_branch) <= layer_num:
+                        self.max_mins_branch.append(MaxMinMeter())
+                    self.max_mins_branch[layer_num].update(feature_map_branch_cuda)
+            if self.is_inblock:
+                for layer_num, feature_map_block in \
+                        enumerate(feature_maps_block):
+                    feature_map_block_cuda = feature_map_block.cuda()
+                    self.zero_cnt += (feature_map_block_cuda.abs() < 10 ** -10).sum().item()
+                    self.size_flat += element_cnt(feature_map_block)
+                    if len(self.max_mins_block) <= layer_num:
+                        self.max_mins_block.append(MaxMinMeter())
+                    self.max_mins_block[layer_num].update(feature_map_block_cuda)
 
-        self.states_updated = False
+            self.states_updated = False
 
     def print_result(self):
         self.print_fn("==============================================================")
@@ -116,7 +125,7 @@ class HandlerFm(InferResultHandler):
 
 class HandlerQuanti(InferResultHandler):
     def __init__(self, print_fn=print, code_length_dict=None, print_sparsity=True, print_range_all=False,
-                 print_range_layer=True):
+                 print_range_layer=True, is_inblock=False, is_branch=True):
         # State
         self.states_updated = False
         self.zero_cnt = 0
@@ -126,6 +135,8 @@ class HandlerQuanti(InferResultHandler):
         self.max = -2 ** 40
         self.min = 2 ** 40
         self.code_len = 0
+        self.is_inblock = is_inblock
+        self.is_branch = is_branch
         if code_length_dict is not None:
             self.hist_meter_branch = HistMeter(code_length_dict)
             self.hist_meter_block = HistMeter(code_length_dict)
@@ -140,26 +151,37 @@ class HandlerQuanti(InferResultHandler):
         self.print_range_layer = print_range_layer
 
     def update_batch(self, result, inputs=None):
-        _, _, fm_transforms_branch, _, fm_transforms_block = result
-        for layer_num, (fm_transform_branch, fm_transform_block) in enumerate(zip(fm_transforms_branch, fm_transforms_block)):
-            fm_transform_branch_cuda = fm_transform_branch.cuda()
-            fm_transform_block_cuda = fm_transform_block.cuda()
+        with torch.no_grad():
+            _, _, fm_transforms_branch, _, fm_transforms_block = result
+            if self.is_branch:
+                for layer_num, fm_transform_branch in enumerate(fm_transforms_branch):
+                    fm_transform_branch_cuda = fm_transform_branch.cuda()
 
-            self.zero_cnt += (fm_transform_branch_cuda.abs() < 10 ** -10).sum().item()
-            self.zero_cnt += (fm_transform_block_cuda.abs() < 10 ** -10).sum().item()
+                    self.zero_cnt += (fm_transform_branch_cuda.abs() < 10 ** -10).sum().item()
 
-            self.size_flat += element_cnt(fm_transform_branch)
-            self.size_flat += element_cnt(fm_transform_block)
+                    self.size_flat += element_cnt(fm_transform_branch)
 
-            if len(self.max_mins_branch) <= layer_num:
-                self.max_mins_branch.append(MaxMinMeter())
-                self.max_mins_block.append(MaxMinMeter())
+                    if len(self.max_mins_branch) <= layer_num:
+                        self.max_mins_branch.append(MaxMinMeter())
+                        self.max_mins_block.append(MaxMinMeter())
 
-            self.max_mins_branch[layer_num].update(fm_transform_branch_cuda)
-            self.max_mins_block[layer_num].update(fm_transform_block_cuda)
-            self.hist_meter_branch.update(fm_transform_branch_cuda)
-            self.hist_meter_block.update(fm_transform_block_cuda)
-        self.states_updated = False
+                    self.max_mins_branch[layer_num].update(fm_transform_branch_cuda)
+                    self.hist_meter_branch.update(fm_transform_branch_cuda)
+            if self.is_inblock:
+                for layer_num, fm_transform_block in enumerate(fm_transforms_block):
+                    fm_transform_block_cuda = fm_transform_block.cuda()
+
+                    self.zero_cnt += (fm_transform_block_cuda.abs() < 10 ** -10).sum().item()
+
+                    self.size_flat += element_cnt(fm_transform_block)
+
+                    if len(self.max_mins_branch) <= layer_num:
+                        self.max_mins_branch.append(MaxMinMeter())
+                        self.max_mins_block.append(MaxMinMeter())
+
+                    self.max_mins_block[layer_num].update(fm_transform_block_cuda)
+                    self.hist_meter_block.update(fm_transform_block_cuda)
+            self.states_updated = False
 
     def print_result(self):
         if not self.states_updated:
@@ -258,7 +280,7 @@ class HandlerTrans(InferResultHandler):
 
 
 class HandlerDWT_Fm(InferResultHandler):
-    def __init__(self, print_fn=print, save="", code_length_dict=None, print_sparsity=True, print_range_all=False,
+    def __init__(self, print_fn=print, save="./", code_length_dict=None, print_sparsity=True, print_range_all=False,
                  print_range_layer=True, is_inblock=False, is_branch=True):
         self.states_updated = False
         self.zero_cnt = 0
@@ -287,22 +309,23 @@ class HandlerDWT_Fm(InferResultHandler):
         self.is_print_range_layer = print_range_layer
 
     def update_batch(self, result, inputs=None):
-        _, _, fm_transforms_branch, _, fm_transforms_block = result
-        if self.is_branch:
-            assert len(fm_transforms_branch) != 0, "Nothing in fm_transforms_branch!!!"
-            for layer_num, fm_transform_branch in enumerate(fm_transforms_branch):
-                self._update_dwt(fm_transform_branch, layer_num, self.max_mins_branch, self.hist_meters_branch)
-            for layer_num, meter in enumerate(self.max_mins_branch):
-                self.max = max(self.max, meter.max)
-                self.min = min(self.min, meter.min)
-        if self.is_inblock:
-            assert len(fm_transforms_block) != 0, "Nothing in fm_transforms_block!!!"
-            for layer_num, fm_transform_block in enumerate(fm_transforms_block):
-                self._update_dwt(fm_transform_block, layer_num, self.max_mins_block, self.hist_meters_block)
-            for layer_num, meter in enumerate(self.max_mins_block):
-                self.max = max(self.max, meter.max)
-                self.min = min(self.min, meter.min)
-        self.states_updated = False
+        with torch.no_grad():
+            _, _, fm_transforms_branch, _, fm_transforms_block = result
+            if self.is_branch:
+                assert len(fm_transforms_branch) != 0, "Nothing in fm_transforms_branch!!!"
+                for layer_num, fm_transform_branch in enumerate(fm_transforms_branch):
+                    self._update_dwt(fm_transform_branch, layer_num, self.max_mins_branch, self.hist_meters_branch)
+                for layer_num, meter in enumerate(self.max_mins_branch):
+                    self.max = max(self.max, meter.max)
+                    self.min = min(self.min, meter.min)
+            if self.is_inblock:
+                assert len(fm_transforms_block) != 0, "Nothing in fm_transforms_block!!!"
+                for layer_num, fm_transform_block in enumerate(fm_transforms_block):
+                    self._update_dwt(fm_transform_block, layer_num, self.max_mins_block, self.hist_meters_block)
+                for layer_num, meter in enumerate(self.max_mins_block):
+                    self.max = max(self.max, meter.max)
+                    self.min = min(self.min, meter.min)
+            self.states_updated = False
 
     def _update_dwt(self, feature_map_dwt, layer_num, max_mins, hist_meters):
         assert type(feature_map_dwt) is tuple, "feature_map_dwt is not tuple, make sure it's DWT"
@@ -435,7 +458,7 @@ class HandlerDWT_Fm(InferResultHandler):
 
 
 class HandlerMaskedDWT_Fm(InferResultHandler):
-    def __init__(self, print_fn=print, save="", code_length_dict=None, print_sparsity=True, print_range_all=False,
+    def __init__(self, print_fn=print, save="./", code_length_dict=None, print_sparsity=True, print_range_all=False,
                  print_range_layer=True, is_inblock=False, is_branch=True):
         self.states_updated = False
         self.zero_cnt = 0
@@ -581,7 +604,7 @@ class HandlerMaskedDWT_Fm(InferResultHandler):
 
 
 class HandlerDCT_Fm(InferResultHandler):
-    def __init__(self, print_fn=print, save="", code_length_dict=None):
+    def __init__(self, print_fn=print, save="./", code_length_dict=None):
         # states
         self.states_updated = True
         self.zero_cnt = 0

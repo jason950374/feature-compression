@@ -67,7 +67,14 @@ class HistMeter:
         size = in_stream.size(0)'''
         size = element_cnt(in_stream)
 
+        min_in = in_stream.min()
+        max_in = in_stream.max()
+
         for code in self.hist:
+            if (code + HistMeter.eps) < min_in:
+                continue
+            elif (code - HistMeter.eps) > max_in:
+                continue
             match = (in_stream < (code + HistMeter.eps)) & (in_stream >= (code - HistMeter.eps))
             cnt += int(match.sum().item())
             self.hist[code] += match.sum().item()

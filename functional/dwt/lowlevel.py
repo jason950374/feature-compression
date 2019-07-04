@@ -96,43 +96,54 @@ def afb1d(x, h0, h1, mode='zero', dim=-1):
     h = torch.cat([h0, h1] * C, dim=0)
 
     if mode == 'per' or mode == 'periodization':
-        if x.shape[dim] % 2 == 1:
-            if d == 2:
-                x = torch.cat((x, x[:, :, -1:]), dim=2)
-            else:
-                x = torch.cat((x, x[:, :, :, -1:]), dim=3)
-            N += 1
-
-        x = roll(x, -L2, dim=d)
-        pad = (L - 1, 0) if d == 2 else (0, L - 1)
-        lohi = F.conv2d(x, h, padding=pad, stride=s, groups=C)
-
-        N2 = N // 2
-
         if d == 2:
-            if L2 < N2:
-                lohi[:, :, :L2] += lohi[:, :, N2:N2 + L2]
+            if x.shape[dim] % 2 == 1:
+                pad_odd = torch.cat((x[:, :, -L2:],
+                                     torch.zeros_like(x[:, :, :1]),
+                                     x[:, :, :L2 - 1]), dim=d) * h[-1, 0, :]
+                pad_odd = -pad_odd.sum(dim=2, keepdim=True) / h[-1, 0, L2, 0]
+                x = torch.cat((x, pad_odd), dim=d)
+                N += 1
+
+            if L2 > 1:
+                x = torch.cat((x[:, :, -L2+1:], x, x[:, :, :(L-L2)]), dim=d)
             else:
-                for shift in range(N2, L2, N2):
-                    lohi[:, :, :N2] += lohi[:, :, shift: shift + N2]
-                res = L2 % N2
-                if res != 0:
-                    lohi[:, :, :res] += lohi[:, :, -res:]
+                x = torch.cat((x, x[:, :, :(L - L2)]), dim=d)
+
+            res = h.size(d) - x.size(d)
+            res2 = res // 2
+            while res > 0:
+                if res2 > 0:
+                    x = torch.cat((x[:, :, -res2:], x, x[:, :, :(res - res2)]), dim=d)
                 else:
-                    lohi[:, :, :N2] += lohi[:, :, -N2:]
-            lohi = lohi[:, :, :N2]
+                    x = torch.cat((x, x[:, :, :(res - res2)]), dim=d)
+                res = h.size(d) - x.size(d)
+                res2 = res // 2
+
         else:
-            if L2 < N2:
-                lohi[:, :, :, :L2] += lohi[:, :, :, N2:N2 + L2]
+            if x.shape[dim] % 2 == 1:
+                pad_odd = torch.cat((x[:, :, :, -L2:],
+                                     torch.zeros_like(x[:, :, :, :1]),
+                                     x[:, :, :, :L2 - 1]), dim=3) * h[-1, 0, 0, :]
+                pad_odd = -pad_odd.sum(dim=d, keepdim=True) / h[-1, 0, 0, L2]
+                x = torch.cat((x, pad_odd), dim=d)
+                N += 1
+
+            if L2 > 1:
+                x = torch.cat((x[:, :, :, -L2 + 1:], x, x[:, :, :, :(L - L2)]), dim=d)
             else:
-                for shift in range(N2, L2, N2):
-                    lohi[:, :, :, :N2] += lohi[:, :, :, shift:shift + N2]
-                res = L2 % N2
-                if res != 0:
-                    lohi[:, :, :, :res] += lohi[:, :, :, -res:]
+                x = torch.cat((x, x[:, :, :, :(L - L2)]), dim=d)
+            res = L - x.size(d)
+            res2 = res // 2
+            while res > 0:
+                if res2 > 0:
+                    x = torch.cat((x[:, :, :, -res2:], x, x[:, :, :, :(res - res2)]), dim=d)
                 else:
-                    lohi[:, :, :, :N2] += lohi[:, :, :, -N2:]
-            lohi = lohi[:, :, :, :N2]
+                    x = torch.cat((x, x[:, :, :, :(res - res2)]), dim=d)
+                res = h.size(d) - x.size(d)
+                res2 = res // 2
+
+        lohi = F.conv2d(x, h, stride=s, groups=C)
     else:
         # Calculate the pad size
         outsize = pywt.dwt_coeff_len(N, L, mode=mode)
@@ -290,8 +301,6 @@ def afb2d_nonsep(x, filts, mode='zero'):
         y: Tensor of shape (N, C, 4, H, W)
     """
     C = x.shape[1]
-    Ny = x.shape[2]
-    Nx = x.shape[3]
 
     # Check the filter inputs
     if isinstance(filts, (tuple, list)):
@@ -306,48 +315,56 @@ def afb2d_nonsep(x, filts, mode='zero'):
     Lx = f.size(3)
 
     if mode == 'periodization' or mode == 'per':
+        Ly2 = Ly // 2
+        Lx2 = Lx // 2
         if x.shape[2] % 2 == 1:
-            pad_odd = torch.cat((x[:, :, -Ly//2:],
-                             torch.zeros_like(x[:, :, :1]),
-                             x[:, :, :Ly//2 - 1]), dim=2) * filts[-1, 0, :, :1]
-            pad_odd = -pad_odd.sum(dim=2, keepdim=True) / filts[-1, 0, Ly//2, :1]
+            pad_odd = torch.cat((x[:, :, -Ly2:],
+                                 torch.zeros_like(x[:, :, :1]),
+                                 x[:, :, :Ly2 - 1]), dim=2) * filts[-1, 0, :, :1]
+            pad_odd = -pad_odd.sum(dim=2, keepdim=True) / filts[-1, 0, Ly // 2, :1]
             x = torch.cat((x, pad_odd), dim=2)
-            Ny += 1
         if x.shape[3] % 2 == 1:
-            pad_odd = torch.cat((x[:, :, :, -Ly // 2:],
+            pad_odd = torch.cat((x[:, :, :, -Ly2:],
                                  torch.zeros_like(x[:, :, :, :1]),
-                                 x[:, :, :, :Ly // 2 - 1]), dim=3) * filts[-1, 0, 0, :]
-            pad_odd = -pad_odd.sum(dim=3, keepdim=True) / filts[-1, 0, Ly // 2, :1]
+                                 x[:, :, :, :Ly2 - 1]), dim=3) * filts[-1, 0, 0, :]
+            pad_odd = -pad_odd.sum(dim=3, keepdim=True) / filts[-1, 0, Ly2, :1]
             x = torch.cat((x, pad_odd), dim=3)
-            Nx += 1
-        pad = (Ly - 1, Lx - 1)
+
+        if Ly2 > 1:
+            x = torch.cat((x[:, :, -Ly2 + 1:], x, x[:, :, :(Ly - Ly2)]), dim=2)
+        else:
+            x = torch.cat((x, x[:, :, :(Ly - Ly2)]), dim=2)
+
+        res = Ly - x.size(2)
+        res2 = res // 2
+        while res > 0:
+            if res2 > 0:
+                x = torch.cat((x[:, :, -res2:], x, x[:, :, :(res - res2)]), dim=2)
+            else:
+                x = torch.cat((x, x[:, :, :(res - res2)]), dim=2)
+            res = Ly - x.size(2)
+            res2 = res // 2
+
+        if Lx2 > 1:
+            x = torch.cat((x[:, :, :, -Lx2 + 1:], x, x[:, :, :, :(Lx - Lx2)]), dim=3)
+        else:
+            x = torch.cat((x, x[:, :, :, :(Lx - Lx2)]), dim=3)
+        res = Lx - x.size(3)
+        res2 = res // 2
+        while res > 0:
+            if res2 > 0:
+                x = torch.cat((x[:, :, :, -res2:], x, x[:, :, :, :(res - res2)]), dim=3)
+            else:
+                x = torch.cat((x, x[:, :, :, :(res - res2)]), dim=3)
+            res = Lx - x.size(3)
+            res2 = res // 2
+
         stride = (2, 2)
-        x = roll(roll(x, -Ly // 2, dim=2), -Lx // 2, dim=3)
-        y = F.conv2d(x, f, padding=pad, stride=stride, groups=C)
-        if Ly < Ny:
-            y[:, :, :Ly // 2] += y[:, :, Ny // 2:Ny // 2 + Ly // 2]
-        else:
-            for shift in range(Ny // 2, Ly // 2, Ny // 2):
-                y[:, :, :Ny // 2] += y[:, :, shift:shift + Ny // 2]
-            res = (Ly // 2) % (Ny // 2)
-            if res != 0:
-                y[:, :, :res] += y[:, :, -res:]
-            else:
-                y[:, :, :Ny // 2] += y[:, :, -Ny // 2:]
+        y = F.conv2d(x, f, stride=stride, groups=C)
 
-        if Lx < Nx:
-            y[:, :, :, :Lx // 2] += y[:, :, :, Nx // 2:Nx // 2 + Lx // 2]
-        else:
-            for shift in range(Nx // 2, Lx // 2, Nx // 2):
-                y[:, :, :, :Nx // 2] += y[:, :, :, shift:shift + Nx // 2]
-            res = (Lx // 2) % (Nx // 2)
-            if res != 0:
-                y[:, :, :, :res] += y[:, :, :, -res:]
-            else:
-                y[:, :, :, :Nx // 2] += y[:, :, :, -Nx // 2:]
-
-        y = y[:, :, :Ny // 2, :Nx // 2]
     elif mode == 'zero' or mode == 'symmetric' or mode == 'reflect':
+        Ny = x.shape[2]
+        Nx = x.shape[3]
         # Calculate the pad size
         out1 = pywt.dwt_coeff_len(Ny, Ly, mode=mode)
         out2 = pywt.dwt_coeff_len(Nx, Lx, mode=mode)

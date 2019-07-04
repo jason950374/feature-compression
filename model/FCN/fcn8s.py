@@ -1,5 +1,5 @@
 import os.path as osp
-
+import copy
 import fcn
 import torch.nn as nn
 
@@ -19,8 +19,10 @@ class FCN8s(nn.Module):
             md5='dbd9bbb3829a3184913bccc74373afbb',
         )
 
-    def __init__(self, n_class=21):
+    def __init__(self, n_class=21, compress=None):
         super(FCN8s, self).__init__()
+        self.compress = copy.deepcopy(compress)
+
         # conv1
         self.conv1_1 = nn.Conv2d(3, 64, 3, padding=100)
         self.relu1_1 = nn.ReLU(inplace=True)
@@ -98,30 +100,45 @@ class FCN8s(nn.Module):
                 m.weight.data.copy_(initial_weight)
 
     def forward(self, x):
+        feature_maps = []
+        fm_transforms = []
         h = x
         h = self.relu1_1(self.conv1_1(h))
+        h = self._apply_compress(h, feature_maps, fm_transforms, 0)
         h = self.relu1_2(self.conv1_2(h))
+        h = self._apply_compress(h, feature_maps, fm_transforms, 1)
         h = self.pool1(h)
 
         h = self.relu2_1(self.conv2_1(h))
+        h = self._apply_compress(h, feature_maps, fm_transforms, 2)
         h = self.relu2_2(self.conv2_2(h))
+        h = self._apply_compress(h, feature_maps, fm_transforms, 3)
         h = self.pool2(h)
 
         h = self.relu3_1(self.conv3_1(h))
+        h = self._apply_compress(h, feature_maps, fm_transforms, 4)
         h = self.relu3_2(self.conv3_2(h))
+        h = self._apply_compress(h, feature_maps, fm_transforms, 5)
         h = self.relu3_3(self.conv3_3(h))
+        h = self._apply_compress(h, feature_maps, fm_transforms, 6)
         h = self.pool3(h)
         pool3 = h  # 1/8
 
         h = self.relu4_1(self.conv4_1(h))
+        h = self._apply_compress(h, feature_maps, fm_transforms, 7)
         h = self.relu4_2(self.conv4_2(h))
+        h = self._apply_compress(h, feature_maps, fm_transforms, 8)
         h = self.relu4_3(self.conv4_3(h))
+        h = self._apply_compress(h, feature_maps, fm_transforms, 9)
         h = self.pool4(h)
         pool4 = h  # 1/16
 
         h = self.relu5_1(self.conv5_1(h))
+        h = self._apply_compress(h, feature_maps, fm_transforms, 10)
         h = self.relu5_2(self.conv5_2(h))
+        h = self._apply_compress(h, feature_maps, fm_transforms, 11)
         h = self.relu5_3(self.conv5_3(h))
+        h = self._apply_compress(h, feature_maps, fm_transforms, 12)
         h = self.pool5(h)
 
         h = self.relu6(self.fc6(h))
@@ -153,7 +170,20 @@ class FCN8s(nn.Module):
         h = self.upscore8(h)
         h = h[:, :, 31:31 + x.size()[2], 31:31 + x.size()[3]].contiguous()
 
-        return h
+        return h, feature_maps, fm_transforms
+
+    def _apply_compress(self, x, feature_maps, fm_transforms, indx):
+        feature_maps.append(x)
+        if self.compress is not None:
+            if type(self.compress) is list or type(self.compress) is tuple:
+                x_re, fm_transform = self.compress[indx](x)
+                fm_transforms.append(fm_transform)
+            else:
+                x_re, fm_transform = self.compress(x)
+                fm_transforms.append(fm_transform)
+            return x_re
+        else:
+            return x
 
     def copy_params_from_fcn16s(self, fcn16s):
         for name, l1 in fcn16s.named_children():
@@ -167,6 +197,12 @@ class FCN8s(nn.Module):
             if l1.bias is not None:
                 assert l1.bias.size() == l2.bias.size()
                 l2.bias.data.copy_(l1.bias.data)
+
+    def compress_replace(self, compress_new):
+        self.compress = copy.deepcopy(compress_new)
+        if type(self.compress) is list or type(self.compress) is tuple:
+            for idx, module in enumerate(self.compress):
+                self.add_module("compress" + str(idx), module)
 
 
 class FCN8sAtOnce(FCN8s):
@@ -183,30 +219,57 @@ class FCN8sAtOnce(FCN8s):
         )
 
     def forward(self, x):
+        feature_maps = []
         h = x
         h = self.relu1_1(self.conv1_1(h))
+        feature_maps.append(h)
+        _, _, = self.compress[0](h)
         h = self.relu1_2(self.conv1_2(h))
+        feature_maps.append(h)
+        _, _, = self.compress[1](h)
         h = self.pool1(h)
 
         h = self.relu2_1(self.conv2_1(h))
+        feature_maps.append(h)
+        _, _, = self.compress[2](h)
         h = self.relu2_2(self.conv2_2(h))
+        feature_maps.append(h)
+        _, _, = self.compress[3](h)
         h = self.pool2(h)
 
         h = self.relu3_1(self.conv3_1(h))
+        feature_maps.append(h)
+        _, _, = self.compress[4](h)
         h = self.relu3_2(self.conv3_2(h))
+        feature_maps.append(h)
+        _, _, = self.compress[5](h)
         h = self.relu3_3(self.conv3_3(h))
+        feature_maps.append(h)
+        _, _, = self.compress[6](h)
         h = self.pool3(h)
         pool3 = h  # 1/8
 
         h = self.relu4_1(self.conv4_1(h))
+        feature_maps.append(h)
+        _, _, = self.compress[7](h)
         h = self.relu4_2(self.conv4_2(h))
+        feature_maps.append(h)
+        _, _, = self.compress[8](h)
         h = self.relu4_3(self.conv4_3(h))
+        feature_maps.append(h)
+        _, _, = self.compress[9](h)
         h = self.pool4(h)
         pool4 = h  # 1/16
 
         h = self.relu5_1(self.conv5_1(h))
+        feature_maps.append(h)
+        _, _, = self.compress[10](h)
         h = self.relu5_2(self.conv5_2(h))
+        feature_maps.append(h)
+        _, _, = self.compress[11](h)
         h = self.relu5_3(self.conv5_3(h))
+        feature_maps.append(h)
+        _, _, = self.compress[12](h)
         h = self.pool5(h)
 
         h = self.relu6(self.fc6(h))
@@ -238,7 +301,7 @@ class FCN8sAtOnce(FCN8s):
         h = self.upscore8(h)
         h = h[:, :, 31:31 + x.size()[2], 31:31 + x.size()[3]].contiguous()
 
-        return h
+        return h, feature_maps
 
     def copy_params_from_vgg16(self, vgg16):
         features = [

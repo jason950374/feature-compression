@@ -75,7 +75,6 @@ class DWTForward(nn.Module):
         yh = []
         ll = x
         size = (x.size(-2), x.size(-1))
-
         # Do a multilevel transform
         for j in range(self.J):
             # Do 1 level of the transform

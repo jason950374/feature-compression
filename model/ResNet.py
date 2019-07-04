@@ -202,12 +202,13 @@ class ResNetStages(nn.Module):
 
     def compress_replace_inblock(self, compress_new):
         for idx, block in enumerate(self.layers):
-            if type(self.compress) is list or type(self.compress) is tuple:
+            if type(compress_new) is list or type(compress_new) is tuple:
                 block.compress_replace_inblock(compress_new[idx])
             else:
                 block.compress_replace_inblock(copy.deepcopy(compress_new))
 
     def update(self):
+        # TODO updata inblock
         if type(self.compress) is list or type(self.compress) is tuple:
             for indx, block in enumerate(self.layers):
                 self.compress[indx].update()

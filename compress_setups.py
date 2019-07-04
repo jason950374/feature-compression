@@ -49,7 +49,7 @@ def with_mask(channel, q_table_dwt, wavelet, bit, q_factor, norm_mode, retain_ra
     return Compress(pair).cuda()
 
 
-def compress_list_gen_branch(channel, maximum_fm, wavelet='db1', bit=8, norm_mode='l1', retain_ratio=0.5, tau_mask=1):
+def compress_list_gen_branch(channel, maximum_fm, wavelet='db2', bit=8, norm_mode='l1', retain_ratio=0.5, tau_mask=1):
     compress_list = []
     for i in range(len(maximum_fm) - 1):
         q_factor = maximum_fm[i] / (2 ** bit - 1)
@@ -58,7 +58,7 @@ def compress_list_gen_branch(channel, maximum_fm, wavelet='db1', bit=8, norm_mod
         q_list_dct = [25, 25, 25, 25, 25, 25, 25, 25,
                       25, 25, 25, 25, 25, 25, 25]
 
-        q_table_dwt = q_table_dwt * 255 / maximum_fm[i]
+        q_table_dwt = q_table_dwt * (2 ** bit - 1) / maximum_fm[i]
 
         # c = quant(bit, q_factor)
         # c = dwt(q_table_dwt, wavelet, bit, q_factor)
@@ -70,7 +70,7 @@ def compress_list_gen_branch(channel, maximum_fm, wavelet='db1', bit=8, norm_mod
     q_list_dct = [25, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6,
                   10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6]
 
-    q_table_dwt = q_table_dwt * 255 / maximum_fm[-1]
+    q_table_dwt = q_table_dwt * (2 ** bit - 1) / maximum_fm[-1]
 
     # c = quant(bit, q_factor)
     # c = dwt(q_table_dwt, wavelet, bit, q_factor, shift=False)
@@ -80,19 +80,19 @@ def compress_list_gen_branch(channel, maximum_fm, wavelet='db1', bit=8, norm_mod
     return compress_list
 
 
-def compress_list_gen_block(channel, maximum_fm, wavelet='db1', bit=8, norm_mode='l1', retain_ratio=0.5, tau_mask=1):
+def compress_list_gen_block(channel, maximum_fm, wavelet='db2', bit=8, norm_mode='l1', retain_ratio=0.5, tau_mask=1):
     compress_list = []
     for i in range(len(maximum_fm)):
         q_factor = maximum_fm[i] / (2 ** bit - 1)
 
-        if i == 0:
-            q_table_dwt = torch.tensor([0.1, 0.1, 0.1, 0.1], dtype=torch.get_default_dtype())
-        else:
-            q_table_dwt = torch.tensor([0.05, 0.05, 0.05, 0.05], dtype=torch.get_default_dtype())
+        # if i == 0:
+        #     q_table_dwt = torch.tensor([0.1, 0.1, 0.1, 0.1], dtype=torch.get_default_dtype())
+        # else:
+        q_table_dwt = torch.tensor([0.001, 0.001, 0.01, 0.05], dtype=torch.get_default_dtype())
         q_list_dct = [25, 25, 25, 25, 25, 25, 25, 25,
                       25, 25, 25, 25, 25, 25, 25]
 
-        q_table_dwt = q_table_dwt * 255 / maximum_fm[i]
+        q_table_dwt = q_table_dwt * (2 ** bit - 1)  # / maximum_fm[i]
 
         # c = quant(bit, q_factor)
         c = dwt(q_table_dwt, wavelet, bit, q_factor)

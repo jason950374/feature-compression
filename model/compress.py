@@ -447,7 +447,7 @@ class FtMapShiftNorm(EncoderDecoderPair):
             return x
 
 
-class Transform(EncoderDecoderPair):
+class Transform_seperate(EncoderDecoderPair):
     r"""
     Apply transform_matrix to pixels and maintain inverse_matrix for decoder
 
@@ -458,7 +458,7 @@ class Transform(EncoderDecoderPair):
         channel_num (int): The input channel number
     """
     def __init__(self, channel_num, norm_mode='l1', init_value=None):
-        super(Transform, self).__init__()
+        super(Transform_seperate, self).__init__()
         self.transform_matrix = nn.Parameter(torch.Tensor(channel_num, channel_num))
         # self.register_buffer('transform_matrix_reorder', None)
         self.register_buffer('transform_matrix_reorder', torch.Tensor(channel_num, channel_num))
@@ -532,6 +532,132 @@ class Transform(EncoderDecoderPair):
         with torch.no_grad():
             self.transform_matrix_reorder.data = self.transform_matrix[indx, :]
             self.inverse_matrix_reorder.data = torch.inverse(self.transform_matrix_reorder)
+
+
+class Transform(EncoderDecoderPair):
+    r"""
+    Apply transform_matrix to pixels and maintain inverse_matrix for decoder
+
+    The dimension of transform_matrix is (input channel, input channel) which maps feature map to
+    same channel dimension
+
+    Args:
+        channel_num (int): The input channel number
+    """
+    def __init__(self, channel_num, norm_mode='l1', init_value=None):
+        super(Transform, self).__init__()
+        self.transform_matrix = nn.Parameter(torch.Tensor(channel_num, channel_num))
+        # self.register_buffer('transform_matrix_reorder', None)
+        self.register_buffer('transform_matrix_reorder', torch.Tensor(channel_num, channel_num))
+        self.register_buffer('inverse_matrix', torch.Tensor(channel_num, channel_num))
+        # self.register_buffer('inverse_matrix_reorder', None)
+        self.register_buffer('inverse_matrix_reorder', torch.Tensor(channel_num, channel_num))
+        self.norm_mode = norm_mode
+
+        if init_value is None:
+            # nn.init.uniform_(self.transform_matrix, 0, 1)
+            # nn.init.kaiming_normal_(self.transform_matrix)
+            # with torch.no_grad():
+            #     self.transform_matrix /= self.transform_matrix.sum(dim=1)
+
+            nn.init.eye_(self.transform_matrix)
+        else:
+            with torch.no_grad():
+                self.transform_matrix.data = init_value.clone()
+
+        self.update()
+
+    def forward(self, x, quanti=False, is_encoder=True):
+        if is_encoder:
+            if self.training:
+                weight = self.transform_matrix.unsqueeze(-1)
+                weight = weight.unsqueeze(-1)
+                if self.norm_mode == 'sum':
+                    weight_norm = weight / weight.sum(dim=1, keepdim=True)  # sum
+                elif self.norm_mode == 'l1':
+                    weight_norm = weight / weight.abs().sum(dim=1, keepdim=True)  # L1
+                elif self.norm_mode == 'l2':
+                    weight_norm = weight / (weight ** 2).sum(dim=1, keepdim=True)  # L2
+                else:
+                    weight_norm = weight
+                x_tr = F.conv2d(x, weight_norm.detach())
+
+                return x_tr
+            else:
+                weight = self.transform_matrix_reorder.unsqueeze(-1)
+                weight = weight.unsqueeze(-1)
+                x = F.conv2d(x, weight)
+                return x
+
+        else:
+            if self.training:
+                weight = self.inverse_matrix.unsqueeze(-1)
+            else:
+                weight = self.inverse_matrix_reorder.unsqueeze(-1)
+            weight = weight.unsqueeze(-1)
+            x = F.conv2d(x, weight)
+
+            return x
+
+    def update(self):
+        """
+        Call update after transform_matrix is modified (e.g. after optimizer updated).
+        """
+        with torch.no_grad():
+            if self.norm_mode == 'sum':
+                self.transform_matrix.data /= self.transform_matrix.sum(dim=1, keepdim=True)  # sum
+            elif self.norm_mode == 'l1':
+                self.transform_matrix.data /= self.transform_matrix.abs().sum(dim=1, keepdim=True)  # L1
+            elif self.norm_mode == 'l2':
+                self.transform_matrix.data /= (self.transform_matrix ** 2).sum(dim=1, keepdim=True)  # L2
+            # self.inverse_matrix.data = torch.pinverse(self.transform_matrix)
+        self.inverse_matrix.data = torch.inverse(self.transform_matrix)
+
+    def reorder(self, indx):
+        with torch.no_grad():
+            self.transform_matrix_reorder.data = self.transform_matrix[indx, :]
+            self.inverse_matrix_reorder.data = torch.inverse(self.transform_matrix_reorder)
+
+
+class QuadTree(EncoderDecoderPair):
+    eps = 1e-5
+    # TODO what
+    def __init__(self):
+        super(QuadTree, self).__init__()
+
+    def forward(self, x, is_encoder=True):
+        if is_encoder:
+            q_tree = self.to_quadtree(x)
+
+            return q_tree, x.size()
+        else:
+            q_tree, size = x
+
+    def to_quadtree(self, x):
+        nx, ny = x.size(-1), x.size(-2)
+        if (x.abs() > self.eps).any():
+            if nx > 4 and ny > 4:
+                DL = x[..., :ny // 2, :nx // 2]
+                DR = x[..., :ny // 2, nx // 2:]
+                TL = x[..., ny // 2:, :nx // 2]
+                TR = x[..., ny // 2:, nx // 2:]
+                return self.to_quadtree(DL), self.to_quadtree(DR), self.to_quadtree(TL), self.to_quadtree(TR)
+            else:
+                return x[..., :, :]
+        else:
+            return x[..., :1, :1]
+
+    def from_quadtree(self, q_tree, size):
+        x_re = torch.ones(size)
+        nx, ny = size[-1], size[-2]
+        if type(q_tree) is tuple:
+            self.from_quadtree(q_tree[0], x[..., :ny // 2, :nx // 2])
+            self.from_quadtree(q_tree[1], x[..., :ny // 2, nx // 2:])
+            self.from_quadtree(q_tree[2], x[..., ny // 2:, :nx // 2])
+            self.from_quadtree(q_tree[3], x[..., ny // 2:, nx // 2:])
+        else:
+            x_re[:, :, :, :] = q_tree
+        return x_re
 
 
 class DownSampleBranch(nn.Sequential):
@@ -660,7 +786,7 @@ class Compress(nn.Module):
         fm_transforms = self.compress(x, is_encoder=True)
         x = self.compress(fm_transforms, is_encoder=False)
 
-        return x, fm_transforms[0]# [1][0]  # TODO ugly
+        return x, fm_transforms # [0]  #[1][0]  # TODO ugly
 
     def update(self):
         self.compress.update()

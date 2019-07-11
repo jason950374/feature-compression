@@ -51,6 +51,10 @@ class BasicBlock(nn.Module):
     def compress_replace_inblock(self, compress_new):
         self.compress = compress_new
 
+    def update(self):
+        if self.compress is not None:
+            self.compress.update()
+
 
 class Bottleneck(nn.Module):
     """
@@ -120,6 +124,9 @@ class ResNetBlock(nn.Module):
 
     def compress_replace_inblock(self, compress_new):
         self.block.compress_replace_inblock(compress_new)
+
+    def update(self):
+        self.block.update()
 
 
 class ResNetStages(nn.Module):
@@ -208,12 +215,13 @@ class ResNetStages(nn.Module):
                 block.compress_replace_inblock(copy.deepcopy(compress_new))
 
     def update(self):
-        # TODO updata inblock
         if type(self.compress) is list or type(self.compress) is tuple:
             for indx, block in enumerate(self.layers):
                 self.compress[indx].update()
+                block.update()
         else:
             self.compress.update()
+
 
     def forward(self, x):
         feature_maps_branch = []  # TODO clean up

@@ -616,7 +616,6 @@ class HandlerDCT_Fm(InferResultHandler):
 
         # IO
         self.print_fn = print_fn
-
         self.save = save
 
         # Config
@@ -668,3 +667,94 @@ class HandlerDCT_Fm(InferResultHandler):
     def set_config(self, code_length_dict=None):
         self.states_updated = False
         self.code_length_dict = code_length_dict
+
+
+class HandlerQuadTree(InferResultHandler):
+    eps = 1e-5
+
+    def __init__(self, print_fn=print):
+        # states
+        self.states_updated = True
+        self.cnt_level = []
+        self.cnt_complete_level = []
+
+        # IO
+        self.print_fn = print_fn
+
+    def update_batch(self, result, inputs=None):
+        _, _, fm_transforms, _, _ = result
+        for fm_transform in fm_transforms:
+            quadtree = {}
+            self.to_quadtree(fm_transform, quadtree, 0)
+            self.cnt_in_levels(quadtree, self.cnt_level, 0, 0)
+            quadtree_full = {}
+            self.to_quadtree(torch.ones_like(fm_transform), quadtree_full, 0)
+            self.cnt_in_levels(quadtree_full, self.cnt_complete_level, 0, 0)
+
+    def to_quadtree(self, x, quadtree, indx):
+        """
+        internal node: 1
+        leaf 0: 0
+        leaf other: 2
+        Args:
+            x:
+            quadtree:
+            indx:
+
+        Returns:
+
+        """
+        nx, ny = x.size(-1), x.size(-2)
+        if nx > 1:
+            if ny > 1:
+                self.to_quadtree(x[..., :ny // 2, :nx // 2], quadtree, 4 * indx + 1)
+                self.to_quadtree(x[..., ny // 2:, :nx // 2], quadtree, 4 * indx + 2)
+                self.to_quadtree(x[..., :ny // 2, nx // 2:], quadtree, 4 * indx + 3)
+                self.to_quadtree(x[..., ny // 2:, nx // 2:], quadtree, 4 * indx + 4)
+                quadtree[indx] = (quadtree[4 * indx + 1] + quadtree[4 * indx + 2] +
+                                  quadtree[4 * indx + 3] + quadtree[4 * indx + 4]) > self.eps
+            else:
+                self.to_quadtree(x[..., :, :nx // 2], quadtree, 4 * indx + 1)
+                self.to_quadtree(x[..., :, nx // 2:], quadtree, 4 * indx + 3)
+                quadtree[4 * indx + 2] = -1
+                quadtree[4 * indx + 4] = -1
+                quadtree[indx] = (quadtree[4 * indx + 1] + quadtree[4 * indx + 3]) > self.eps
+        else:
+            if ny > 1:
+                self.to_quadtree(x[..., :ny // 2, :], quadtree, 4 * indx + 1)
+                self.to_quadtree(x[..., ny // 2:, :], quadtree, 4 * indx + 2)
+                quadtree[4 * indx + 3] = -1
+                quadtree[4 * indx + 4] = -1
+                quadtree[indx] = (quadtree[4 * indx + 1] + quadtree[4 * indx + 2]) > self.eps
+            else:
+                quadtree[indx] = (x.abs() > self.eps) * 2
+
+    def cnt_in_levels(self, quadtree, cnt_level, indx, level):
+        if len(cnt_level) <= level:
+            cnt_level.append(0)
+        if isinstance(quadtree[indx], torch.Tensor):
+            cnt = quadtree[indx].sum().item()
+            max_ = quadtree[indx].max()
+            if max_ == 2:
+                cnt /= 2
+                cnt_level[level] += cnt
+            elif max_ == 1:
+                self.cnt_level[level] += cnt
+                self.cnt_in_levels(quadtree, cnt_level, indx * 4 + 1, level + 1)
+                self.cnt_in_levels(quadtree, cnt_level, indx * 4 + 2, level + 1)
+                self.cnt_in_levels(quadtree, cnt_level, indx * 4 + 3, level + 1)
+                self.cnt_in_levels(quadtree, cnt_level, indx * 4 + 4, level + 1)
+            else:
+                assert max_ == 0, "unknown quadtree value"
+                assert quadtree[indx].min() == 0, "unknown quadtree value"
+        else:
+            assert quadtree[indx] == -1, "unknown quadtree value"
+
+    def print_result(self):
+        self.print_fn("==============================================================")
+        for level, cnt in enumerate(self.cnt_level):
+            self.print_fn("level {}: {}".format(level, cnt))
+        self.print_fn("==============complete ==============")
+        for level, cnt in enumerate(self.cnt_complete_level):
+            self.print_fn("level {}: {}".format(level, cnt))
+        self.print_fn("==============================================================")

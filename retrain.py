@@ -50,7 +50,7 @@ parser.add_argument('--gamma', type=float, default=0.1, help="gamma")
 
 args = parser.parse_args()
 # args.save = 'ckpts/retrain_{}_{}'.format(args.wavelet, args.load[6:-9])
-args.save = 'ckpts/retrain_tauLoss_{}_noRelu_lr_{}_spLoss_{}_retainRatio_{}'.format(
+args.save = 'ckpts/retrain_tauLoss_long_{}_noRelu_lr_{}_spLoss_{}_retainRatio_{}'.format(
     args.tauLoss, args.learning_rate, args.l1_coe, args.retainRatio)
 # args.save = 'ckpts/retrain_ImageNet_retainRatio_{}_{}'.format(args.retainRatio, time.strftime("%m%d_%H%M%S"))
 args.learning_rate = args.learning_rate * args.batch_size / 256
@@ -78,7 +78,7 @@ elif args.dataset == 'cifar100':
     utils.multiply_adds = 2
 elif args.dataset == 'imageNet':
     args.num_classes = 1000
-    args.epochs = 30
+    args.epochs = 50
     args.weight_decay = 1e-4
     args.usage_weight = 1
     utils.multiply_adds = 1
@@ -131,12 +131,12 @@ def main():
         utils.load(model, args)
 
     # quick test for this ckpts: cifar10_resnet20_0409_184724
-    maximum_fm = [5.2, 6.7, 5.3, 5.8, 6.7, 7.6, 4.6, 5.7, 36]
-    channel = [16, 16, 16, 32, 32, 32, 64, 64, 64]
+    # maximum_fm = [5.2, 6.7, 5.3, 5.8, 6.7, 7.6, 4.6, 5.7, 36]
+    # channel = [16, 16, 16, 32, 32, 32, 64, 64, 64]
 
     # quick test for pretrain resnet18
-    # maximum_fm = [11, 15.5, 14, 11.5, 8.5, 14, 11.5, 101]
-    # channel = [64, 64, 128, 128, 256, 256, 512, 512]
+    maximum_fm = [11, 15.5, 14, 11.5, 8.5, 14, 11.5, 101]
+    channel = [64, 64, 128, 128, 256, 256, 512, 512]
 
     compress_list = compress_list_gen_branch(channel, maximum_fm, args.wavelet, args.bit,
                                              norm_mode=args.norm_mode,
@@ -183,7 +183,7 @@ def main():
     if args.dataset == 'cifar10' or args.dataset == 'cifar100':
         milestones = [40, 70]
     elif args.dataset == 'imageNet':
-        milestones = [10, 25]
+        milestones = [20, 40]
     else:
         milestones = None
 
@@ -229,9 +229,14 @@ def main():
 
         # Evaluate the test accuracy
         if epoch > args.epochs_test:
-            for compress in model.stages.compress:
-                indx = compress.compress.module[-1].reorder()
-                compress.compress.separate.reorder(indx)
+            if args.l1_coe > 1e-20:
+                for compress in model.stages.compress:
+                    indx = compress.compress.module[-1].reorder()
+                    compress.compress.separate.reorder(indx)
+            else:
+                for compress in model.stages.compress:
+                    indx = compress.compress[-1].reorder()
+                    compress.compress[0].reorder(indx)
             model.update()
             this_acc, _ = infer(test_queue, model)
 
@@ -270,13 +275,13 @@ def train(train_queue, model, criterion, optimizer, cur_epoch, args, milestones,
         target = Variable(target).cuda(async=True)
 
         # Forward propagation
-        logits, _, fm_transforms = model(x)
+        logits, _, fm_transforms, _, _ = model(x)
 
         loss = 0
         classloss = criterion(logits, target)
         loss += classloss
+        n = x.size(0)
 
-        sp_loss = 0
         if args.l1_coe > 1e-20:
             # l1 = utils.iterable_l1(fm_transforms)
             freq_selects = [compress.compress.module[-1].freq_select.detach() for compress in model.stages.compress]
@@ -286,27 +291,41 @@ def train(train_queue, model, criterion, optimizer, cur_epoch, args, milestones,
             sp_loss = utils.dwt_channel_weighted_loss(fm_transforms, channel_weight) * args.l1_coe
             loss += sp_loss
 
-        biloss = 0
-        for compress in model.stages.compress:
-            if abs(args.retainRatio - 0.5) < 0.000001:
-                threshold = compress.compress.module[-1].freq_select.median()
-            else:
-                kth = int(compress.compress.module[-1].freq_select.size(0) * args.retainRatio)
-                threshold, _ = torch.kthvalue(compress.compress.module[-1].freq_select, kth)
-            biloss += utils.bipolar(compress.compress.module[-1].freq_select,
-                                    threshold.detach())
-        loss += (biloss * 1e-3)
+            detloss = 0
+            # margin = 0.01
+            margin = 0.1
+            for compress in model.stages.compress:
+                m = compress.compress.separate.transform_matrix
+                m = m / m.abs().sum(dim=1, keepdim=True)
+                det = torch.det(m)
+                factor = det.abs().detach() * m.size(0)
+                detloss += ((F.relu(margin - det.abs()) / factor) * args.batch_size * 1e-2)
+            loss += detloss
 
-        detloss = 0
-        # margin = 0.01
-        margin = 0.1
-        for compress in model.stages.compress:
-            m = compress.compress.separate.transform_matrix
-            m = m / m.abs().sum(dim=1, keepdim=True)
-            det = torch.det(m)
-            factor = det.abs().detach() * m.size(0)
-            detloss += ((F.relu(margin - det.abs()) / factor) * args.batch_size * 1e-2)
-        loss += detloss
+            biloss = 0
+            for compress in model.stages.compress:
+                if abs(args.retainRatio - 0.5) < 0.000001:
+                    threshold = compress.compress.module[-1].freq_select.median()
+                else:
+                    kth = int(compress.compress.module[-1].freq_select.size(0) * args.retainRatio)
+                    threshold, _ = torch.kthvalue(compress.compress.module[-1].freq_select, kth)
+                biloss += utils.bipolar(compress.compress.module[-1].freq_select,
+                                        threshold.detach())
+            loss += (biloss * 1e-3)
+
+            sp_loss_meter.update(sp_loss.item(), n)
+            detloss_meter.update(detloss.item() if isinstance(detloss, torch.Tensor) else detloss, n)
+        else:
+            biloss = 0
+            for compress in model.stages.compress:
+                if abs(args.retainRatio - 0.5) < 0.000001:
+                    threshold = compress.compress[-1].freq_select.median()
+                else:
+                    kth = int(compress.compress[-1].freq_select.size(0) * args.retainRatio)
+                    threshold, _ = torch.kthvalue(compress.compress[-1].freq_select, kth)
+                biloss += utils.bipolar(compress.compress[-1].freq_select,
+                                        threshold.detach())
+            loss += (biloss * 1e-3)
 
         optimizer.zero_grad()
         loss.backward()
@@ -319,11 +338,10 @@ def train(train_queue, model, criterion, optimizer, cur_epoch, args, milestones,
         model.update()
 
         prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
-        n = x.size(0)
+
         biloss_meter.update(biloss.item(), n)
         classloss_meter.update(classloss.item(), n)
-        sp_loss_meter.update(sp_loss.item() if isinstance(sp_loss, torch.Tensor) else sp_loss, n)
-        detloss_meter.update(detloss.item(), n)
+
         top1.update(prec1.item(), n)
         top5.update(prec5.item(), n)
 
@@ -351,7 +369,7 @@ def infer(test_queue, model):
             x = Variable(x).cuda()
             target = Variable(target).cuda(async=True)
 
-            logits, _, _ = model(x)
+            logits, _, _, _, _ = model(x)
 
             prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
             n = x.size(0)

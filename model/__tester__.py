@@ -1,5 +1,5 @@
 import torch
-from model.compress import Transform, AdaptiveDWT, softmin_round
+from model.compress import Transform_seperate, AdaptiveDWT, softmin_round
 is_test_softmin_round = False
 is_test_Transform = False
 is_test_AdaptiveDWT = True
@@ -21,7 +21,7 @@ if __name__ == '__main__':
         x = torch.Tensor(10, 64, 8, 8).cuda()
         x.uniform_(0, 255)
 
-        transform = Transform(64).cuda()
+        transform = Transform_seperate(64).cuda()
         transform.update()
 
         x_tran = transform(x, is_encoder=True)

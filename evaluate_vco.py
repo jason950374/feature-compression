@@ -15,6 +15,8 @@ import tqdm
 import infer_result_handler
 import utils
 import time
+import logging
+import sys
 
 from compress_setups import compress_list_gen_block
 
@@ -23,8 +25,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('model_file', help='Model path')
     parser.add_argument('-g', '--gpu', type=int, default=0)
-    save = 'ckpts_voc/test_fcn_{}_0.001_0.001_0.01_0.05'.format(time.strftime("%m%d_%H%M%S"))
+    save = 'ckpts_voc/test_fcn_{}'.format(time.strftime("%m%d_%H%M%S"))
     utils.create_exp_dir(save)
+    log_format = '%(asctime)s %(message)s'
+    logging.basicConfig(stream=sys.stdout, level=logging.INFO,
+                        format=log_format, datefmt='%m/%d %I:%M:%S %p')
+    fh = logging.FileHandler(os.path.join(save, 'log.txt'))
+    fh.setFormatter(logging.Formatter(log_format))
+    logging.getLogger().addHandler(fh)
 
     args = parser.parse_args()
 
@@ -63,12 +71,15 @@ def main():
 
     code_length_dict = utils.gen_signed_seg_dict(1, 2 ** (8 - 1))
     u_code_length_dict = utils.gen_seg_dict(1, 2 ** 8)
-    hd_maximum_fm = infer_result_handler.HandlerFm(print_fn=print, print_sparsity=False)
-    hd_dwt_fm = infer_result_handler.HandlerDWT_Fm(print_fn=print,
+    hd_maximum_fm = infer_result_handler.HandlerFm(print_fn=logging.info, print_sparsity=False)
+    hd_dwt_fm = infer_result_handler.HandlerDWT_Fm(print_fn=logging.info,
                                                    code_length_dict=code_length_dict,
                                                    save=save)
-    hd_quan_fm = infer_result_handler.HandlerQuanti(print_fn=print,
+    hd_quan_fm = infer_result_handler.HandlerQuanti(print_fn=logging.info,
                                                     code_length_dict=u_code_length_dict)
+    hd_quad_tree = infer_result_handler.HandlerQuadTree(print_fn=logging.info)
+
+    hd_list = [hd_maximum_fm, hd_quan_fm, hd_quad_tree]
 
     channel = [64, 64, 128, 128, 256, 256, 256, 512, 512, 512, 512, 512, 512]
     a = 1
@@ -95,9 +106,8 @@ def main():
             lbl_pred = score.data.max(1)[1].cpu().numpy()[:, :, :]
             lbl_true = target.data.cpu()
 
-            hd_maximum_fm.update_batch((score, fms, tr_fms, None, None))
-            hd_dwt_fm.update_batch((score, fms, tr_fms, None, None))
-            # hd_quan_fm.update_batch((score, fms, tr_fms, None, None))
+            for hd in hd_list:
+                hd.update_batch((score, fms, tr_fms, None, None))
 
             for img, lt, lp in zip(imgs, lbl_true, lbl_pred):
                 img, lt = val_loader.dataset.untransform(img, lt)
@@ -113,11 +123,10 @@ def main():
     metrics = np.array(metrics)
     metrics *= 100
 
-    hd_maximum_fm.print_result()
-    # hd_quan_fm.print_result()
-    hd_dwt_fm.print_result()
+    for hd in hd_list:
+        hd.print_result()
 
-    print('''\
+    logging.info('''\
 Accuracy: {0}
 Accuracy Class: {1}
 Mean IU: {2}

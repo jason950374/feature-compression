@@ -1,4 +1,5 @@
 import numpy as np
+import json
 from matplotlib import pyplot as plt
 
 
@@ -106,6 +107,10 @@ class HistMeter:
             total_len += self.hist[code] * code_length_dict[code]
 
         return total_len
+
+    def save_hist_json(self, filename):
+        with open(filename, 'w') as f:
+            json.dump(self.hist, f)
 
     def plt_hist(self, plt_fn=None, tight=True):
         if plt_fn is None:

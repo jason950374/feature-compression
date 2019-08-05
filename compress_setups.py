@@ -64,16 +64,18 @@ def with_mask(channel, q_table_dwt, wavelet, bit, q_factor, norm_mode, retain_ra
     return Compress(seq).cuda()
 
 
-def compress_list_gen_branch(channel, maximum_fm, wavelet='db2', bit=8, norm_mode='l1', retain_ratio=0.5, tau_mask=1):
+def compress_list_gen_branch(channel, maximum_fm, wavelet='db2', bit=8, dwt_coe_branch=None, norm_mode='l1', retain_ratio=0.5, tau_mask=1):
     compress_list = []
     for i in range(len(maximum_fm) - 1):
         q_factor = maximum_fm[i] / (2 ** bit - 1)
 
-        q_table_dwt = torch.tensor([0.1, 0.1, 0.1, 0.1], dtype=torch.get_default_dtype())
+        q_table_dwt = torch.tensor([1, 1, 1, 1], dtype=torch.get_default_dtype())
         q_list_dct = [25, 25, 25, 25, 25, 25, 25, 25,
                       25, 25, 25, 25, 25, 25, 25]
 
-        q_table_dwt = q_table_dwt * (2 ** bit - 1) / maximum_fm[i]
+        q_table_dwt = q_table_dwt * (2 ** bit - 1)
+        if dwt_coe_branch is not None:
+            q_table_dwt *= dwt_coe_branch[i]
 
         # c = quant(bit, q_factor)
         # c = dwt(q_table_dwt, wavelet, bit, q_factor)
@@ -86,11 +88,13 @@ def compress_list_gen_branch(channel, maximum_fm, wavelet='db2', bit=8, norm_mod
     q_list_dct = [25, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6,
                   10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6]
 
-    q_table_dwt = q_table_dwt * (2 ** bit - 1) / maximum_fm[-1]
+    q_table_dwt = q_table_dwt * (2 ** bit - 1)
+    if dwt_coe_branch is not None:
+        q_table_dwt *= dwt_coe_branch[-1]
 
     # c = quant(bit, q_factor)
     # c = dwt(q_table_dwt, wavelet, bit, q_factor, shift=False)
-    #c = with_mask_M(channel[-1], q_table_dwt, 'haar', bit, q_factor, norm_mode, retain_ratio, tau_mask, shift=False)
+    # c = with_mask_M(channel[-1], q_table_dwt, 'haar', bit, q_factor, norm_mode, retain_ratio, tau_mask, shift=False)
     c = with_mask(channel[-1], q_table_dwt, 'haar', bit, q_factor, norm_mode, retain_ratio, tau_mask, shift=False)
     compress_list.append(c)
 

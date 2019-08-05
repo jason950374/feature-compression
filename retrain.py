@@ -43,16 +43,18 @@ parser.add_argument('--l1_coe', type=float, default=0, help="coefficient of L1 r
 parser.add_argument('--bit', type=int, default=8, help="coefficient of L1 regularizer for sparsity")
 parser.add_argument('--norm_mode', type=str, default='l1', help="l1, l2, sum, otherwise no normalize")
 parser.add_argument('--rand_factor', type=float, default=0, help="rand_factor")
-parser.add_argument('--tauMask', type=float, default=1, help="tau for softmin in MaskCompressDWT")
+parser.add_argument('--tauMask', type=float, default=2, help="tau for softmin in MaskCompressDWT")
 parser.add_argument('--tauLoss', type=float, default=2, help="tau for tanh in sparsity loss")
 parser.add_argument('--retainRatio', type=float, default=0.75, help="retaining ratio for MaskCompressDWT")
+parser.add_argument('--biloss_coe', type=float, default=1e-3, help="bipolar Loss for s")
 parser.add_argument('--gamma', type=float, default=0.1, help="gamma")
 
 args = parser.parse_args()
 # args.save = 'ckpts/retrain_{}_{}'.format(args.wavelet, args.load[6:-9])
-args.save = 'ckpts/retrain_tauLoss_long_{}_noRelu_lr_{}_spLoss_{}_retainRatio_{}'.format(
-    args.tauLoss, args.learning_rate, args.l1_coe, args.retainRatio)
-# args.save = 'ckpts/retrain_ImageNet_retainRatio_{}_{}'.format(args.retainRatio, time.strftime("%m%d_%H%M%S"))
+args.save = 'ckpts/retrain_tauLoss_long_{}_biLoss_{}_lr_{}_spLoss_{}_retainRatio_{}_{}'.format(
+    args.tauLoss, args.biloss_coe, args.learning_rate, args.l1_coe, args.retainRatio, time.strftime("%m%d_%H%M%S"))
+# args.save = 'ckpts/retrain_long_lr_{}_{}'.format(args.learning_rate, time.strftime("%m%d_%H%M%S"))
+
 args.learning_rate = args.learning_rate * args.batch_size / 256
 
 utils.create_exp_dir(args.save, scripts_to_save=glob.glob('*.py'))
@@ -130,18 +132,26 @@ def main():
     else:
         utils.load(model, args)
 
-    # quick test for this ckpts: cifar10_resnet20_0409_184724
-    # maximum_fm = [5.2, 6.7, 5.3, 5.8, 6.7, 7.6, 4.6, 5.7, 36]
-    # channel = [16, 16, 16, 32, 32, 32, 64, 64, 64]
+    if args.dataset == 'cifar10':
+        # quick test for this ckpts: cifar10_resnet20_0409_184724
+        maximum_fm_branch = [5.2, 6.7, 5.3, 5.8, 6.7, 7.6, 4.6, 5.7, 36]
+        dwt_coe_branch = [0.018, 0.021, 0.022, 0.020, 0.019, 0.017, 0.018, 0.014, 0.047]
+        maximum_fm_block = [2.7, 2.9, 2.7, 2.5, 2.3, 2.3, 2.7, 2.7, 3.4]
+        channel = [16, 16, 16, 32, 32, 32, 64, 64, 64]
+    elif args.dataset == 'imageNet':
+        # quick test for pretrain resnet18
+        maximum_fm_branch = [11, 15.5, 14, 11.5, 8.5, 14, 11.5, 101]
+        dwt_coe_branch = [0.010, 0.013, 0.0094, 0.012, 0.010, 0.0061, 0.0069, 0.036]
+        channel = [64, 64, 128, 128, 256, 256, 512, 512]
+    else:
+        raise NotImplementedError(
+            '{} dataset is not supported. Only support cifar10, cifar100 and imageNet.'.format(args.dataset))
 
-    # quick test for pretrain resnet18
-    maximum_fm = [11, 15.5, 14, 11.5, 8.5, 14, 11.5, 101]
-    channel = [64, 64, 128, 128, 256, 256, 512, 512]
-
-    compress_list = compress_list_gen_branch(channel, maximum_fm, args.wavelet, args.bit,
+    compress_list = compress_list_gen_branch(channel, maximum_fm_branch, args.wavelet, args.bit,
                                              norm_mode=args.norm_mode,
                                              retain_ratio=args.retainRatio,
-                                             tau_mask=args.tauMask)
+                                             tau_mask=args.tauMask,
+                                             dwt_coe_branch=dwt_coe_branch)
 
     model.compress_replace_branch(compress_list)
 
@@ -152,13 +162,13 @@ def main():
     settings = [
         {
             'setting_names': utils.get_param_names(model, 'freq_select'),
-            'lr': args.learning_rate,
+            'lr': 0, # args.learning_rate,
             'weight_decay': 0,
             'momentum': 0
         },
         {
             'setting_names': utils.get_param_names(model, 'transform_matrix'),
-            'lr': 0, # args.learning_rate,
+            'lr': 0,  # args.learning_rate,
             'weight_decay': 0,
             'momentum': 0
         },
@@ -218,11 +228,12 @@ def main():
 
     optimizer.param_groups[0]['initial_lr'] = args.learning_rate
     optimizer.param_groups[0]['lr'] = args.learning_rate
-    optimizer.param_groups[2]['initial_lr'] = args.learning_rate
-    optimizer.param_groups[2]['lr'] = args.learning_rate
 
     for epoch in range(0, args.epochs):
         scheduler.step()
+        if epoch <= 5:
+            optimizer.param_groups[2]['initial_lr'] = args.learning_rate * (10 ** (epoch - 5))
+            optimizer.param_groups[2]['lr'] = args.learning_rate * (10 ** (epoch - 5))
         logging.info('[Train] Epoch = %d , LR = %e', epoch, scheduler.get_lr()[0])
         is_best = False
         train(train_queue, model, criterion, optimizer, epoch, args, milestones, length_code_dict)
@@ -267,6 +278,11 @@ def train(train_queue, model, criterion, optimizer, cur_epoch, args, milestones,
 
     total_epoch = 5 if warm_up else args.epochs
     suffix = 'Warm Up' if warm_up else 'Train'
+    biloss_coe = 0
+    if cur_epoch < 5:
+        biloss_coe = args.biloss_coe * (10 ** (cur_epoch - 5))
+    else:
+        biloss_coe = args.biloss_coe
 
     for step, (x, target) in enumerate(train_queue):
         data_time.update(time.time() - end)
@@ -311,7 +327,7 @@ def train(train_queue, model, criterion, optimizer, cur_epoch, args, milestones,
                     threshold, _ = torch.kthvalue(compress.compress.module[-1].freq_select, kth)
                 biloss += utils.bipolar(compress.compress.module[-1].freq_select,
                                         threshold.detach())
-            loss += (biloss * 1e-3)
+            loss += (biloss * args.biloss_coe)
 
             sp_loss_meter.update(sp_loss.item(), n)
             detloss_meter.update(detloss.item() if isinstance(detloss, torch.Tensor) else detloss, n)
@@ -323,9 +339,11 @@ def train(train_queue, model, criterion, optimizer, cur_epoch, args, milestones,
                 else:
                     kth = int(compress.compress[-1].freq_select.size(0) * args.retainRatio)
                     threshold, _ = torch.kthvalue(compress.compress[-1].freq_select, kth)
+                    threshold2, _ = torch.kthvalue(compress.compress[-1].freq_select, kth + 1)
+                    threshold = (threshold + threshold2) / 2
                 biloss += utils.bipolar(compress.compress[-1].freq_select,
                                         threshold.detach())
-            loss += (biloss * 1e-3)
+            loss += (biloss * biloss_coe)
 
         optimizer.zero_grad()
         loss.backward()

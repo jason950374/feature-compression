@@ -286,7 +286,9 @@ class HandlerDWT_Fm(InferResultHandler):
         self.zero_cnt = 0
         self.size_flat = 0
         self.max_mins_branch = []
+        self.abs_mean_branch = []
         self.max_mins_block = []
+        self.abs_mean_block = []
         self.max = -2 ** 40
         self.min = 2 ** 40
         self.code_len = 0
@@ -314,20 +316,22 @@ class HandlerDWT_Fm(InferResultHandler):
             if self.is_branch:
                 assert len(fm_transforms_branch) != 0, "Nothing in fm_transforms_branch!!!"
                 for layer_num, fm_transform_branch in enumerate(fm_transforms_branch):
-                    self._update_dwt(fm_transform_branch, layer_num, self.max_mins_branch, self.hist_meters_branch)
+                    self._update_dwt(fm_transform_branch, layer_num, self.max_mins_branch,
+                                     self.hist_meters_branch, self.abs_mean_branch)
                 for layer_num, meter in enumerate(self.max_mins_branch):
                     self.max = max(self.max, meter.max)
                     self.min = min(self.min, meter.min)
             if self.is_inblock:
                 assert len(fm_transforms_block) != 0, "Nothing in fm_transforms_block!!!"
                 for layer_num, fm_transform_block in enumerate(fm_transforms_block):
-                    self._update_dwt(fm_transform_block, layer_num, self.max_mins_block, self.hist_meters_block)
+                    self._update_dwt(fm_transform_block, layer_num, self.max_mins_block,
+                                     self.hist_meters_block, self.abs_mean_block)
                 for layer_num, meter in enumerate(self.max_mins_block):
                     self.max = max(self.max, meter.max)
                     self.min = min(self.min, meter.min)
             self.states_updated = False
 
-    def _update_dwt(self, feature_map_dwt, layer_num, max_mins, hist_meters):
+    def _update_dwt(self, feature_map_dwt, layer_num, max_mins, hist_meters, mean_meters):
         assert type(feature_map_dwt) is tuple, "feature_map_dwt is not tuple, make sure it's DWT"
 
         XL, XH, size_cur = feature_map_dwt
@@ -339,9 +343,14 @@ class HandlerDWT_Fm(InferResultHandler):
         if len(hist_meters) <= layer_num:
             hist_meters.append((HistMeter(self.code_length_dict), []))
 
+        if len(mean_meters) <= layer_num:
+            mean_meters.append((AverageMeter(), []))
+
         self.zero_cnt += (XL_cuda.abs() < 10 ** -10).sum().item()
-        self.size_flat += element_cnt(XL)
+        XL_size = element_cnt(XL)
+        self.size_flat += XL_size
         max_mins[layer_num].update(XL_cuda)
+        mean_meters[layer_num][0].update(XL_cuda.abs().mean(), XL_size)
         hist_meters[layer_num][0].update(XL_cuda)
 
         for i, xh in enumerate(XH):
@@ -366,12 +375,17 @@ class HandlerDWT_Fm(InferResultHandler):
 
             for h in [lh, hl, hh]:
                 self.zero_cnt += (h.abs() < 10 ** -10).sum().item()
-                self.size_flat += element_cnt(h)
+                h_size = element_cnt(h)
+                self.size_flat += h_size
                 max_mins[layer_num].update(h)
 
                 if len(hist_meters[layer_num][1]) <= i:
                     hist_meters[layer_num][1].append(HistMeter(self.code_length_dict))
 
+                if len(mean_meters[layer_num][1]) <= i:
+                    mean_meters[layer_num][1].append(AverageMeter())
+
+                mean_meters[layer_num][1][i].update(h.abs().mean(), h_size)
                 hist_meters[layer_num][1][i].update(h)
 
             size_cur = (xh.size(-2), xh.size(-1))
@@ -414,6 +428,7 @@ class HandlerDWT_Fm(InferResultHandler):
             self.print_fn("range: ({}, {})".format(self.min, self.max))
         if self.is_print_range_layer:
             self._print_range_layer()
+        self._print_mean_layer()
         self.print_fn("code length {}".format(self.code_len))
         self.print_fn("Compress rate {}/{}= {}".format(self.size_flat * 8, self.code_len,
                                                        self.size_flat * 8 / self.code_len))
@@ -426,14 +441,16 @@ class HandlerDWT_Fm(InferResultHandler):
             xl_hist.plt_hist(plt_fn=ax)
             figure.savefig('{}/{}_Layer{}_XL.png'.format(self.save, prefix, layer_num))
             ax.cla()
+            xl_hist.save_hist_json('{}/{}Layer{}_XL.json'.format(self.save, prefix, layer_num))
 
             if self.code_length_dict is not None:
                 self.code_len += xl_hist.get_bit_cnt(self.code_length_dict)
 
             for i, xh_hist in enumerate(xh_hists):
                 xh_hist.plt_hist(plt_fn=ax)
-                figure.savefig('{}/{}_Layer{}_XH_{}.png'.format(self.save, prefix, layer_num, i))
+                figure.savefig('{}/{}Layer{}_XH_{}.png'.format(self.save, prefix, layer_num, i))
                 ax.cla()
+                xh_hist.save_hist_json('{}/{}Layer{}_XH_{}.json'.format(self.save, prefix, layer_num, i))
                 if self.code_length_dict is not None:
                     self.code_len += xh_hist.get_bit_cnt(self.code_length_dict)
 
@@ -447,6 +464,16 @@ class HandlerDWT_Fm(InferResultHandler):
             self.print_fn("range in branch of layer{}:  ({}, {})".format(layer_num, meter.max, meter.min))
         for layer_num, meter in enumerate(self.max_mins_block):
             self.print_fn("range in block of layer{}:  ({}, {})".format(layer_num, meter.max, meter.min))
+
+    def _print_mean_layer(self):
+        for layer_num, abs_mean in enumerate(self.abs_mean_branch):
+            self.print_fn("mean XL in branch of  layer{}: {}".format(layer_num, abs_mean[0].avg))
+            for level, meter in enumerate(abs_mean[1]):
+                self.print_fn("mean XH{} in layer{}: {}".format(level, layer_num, meter.avg))
+        for layer_num, abs_mean in enumerate(self.abs_mean_block):
+            self.print_fn("mean XL in branch of  layer{}: {}".format(layer_num, abs_mean[0].avg))
+            for level, meter in enumerate(abs_mean[1]):
+                self.print_fn("mean XH{} in layer{}: {}".format(level, layer_num, meter.avg))
 
     def set_config(self, code_length_dict=None, print_sparsity=True, print_range_all=False,
                    print_range_layer=True):
@@ -470,6 +497,8 @@ class HandlerMaskedDWT_Fm(InferResultHandler):
         self.hist_meters = []
         self.max_ch = []
         self.min_ch = []
+        self.is_inblock = is_inblock
+        self.is_branch = is_branch  # TODO
 
         # IO
         self.print_fn = print_fn
@@ -539,10 +568,10 @@ class HandlerMaskedDWT_Fm(InferResultHandler):
                 self.size_flat += element_cnt(h)
                 max_mins[layer_num].update(h)
 
-                if len(hist_meters[layer_num][1]) <= i:
+                if len(hist_meters[layer_num][1]) <= (i+masked):
                     hist_meters[layer_num][1].append(HistMeter(self.code_length_dict))
 
-                hist_meters[layer_num][1][i].update(h)
+                hist_meters[layer_num][1][(i+masked)].update(h)
 
             size_cur = (xh.size(-2), xh.size(-1))
 
@@ -581,16 +610,18 @@ class HandlerMaskedDWT_Fm(InferResultHandler):
         for layer_num, hist_layer in enumerate(hist_list):
             xl_hist, xh_hists = hist_layer
             xl_hist.plt_hist(plt_fn=ax)
-            figure.savefig('{}/{}_Layer{}_XL.png'.format(self.save, prefix, layer_num))
+            figure.savefig('{}/{}Layer{}_XL.png'.format(self.save, prefix, layer_num))
             ax.cla()
+            xl_hist.save_hist_json('{}/{}Layer{}_XL.json'.format(self.save, prefix, layer_num))
 
             if self.code_length_dict is not None:
                 self.code_len += xl_hist.get_bit_cnt(self.code_length_dict)
 
             for i, xh_hist in enumerate(xh_hists):
                 xh_hist.plt_hist(plt_fn=ax)
-                figure.savefig('{}/{}_Layer{}_XH_{}.png'.format(self.save, prefix, layer_num, i))
+                figure.savefig('{}/{}Layer{}_XH_{}.png'.format(self.save, prefix, layer_num, i))
                 ax.cla()
+                xh_hist.save_hist_json('{}/{}Layer{}_XH_{}.json'.format(self.save, prefix, layer_num, i))
                 if self.code_length_dict is not None:
                     self.code_len += xh_hist.get_bit_cnt(self.code_length_dict)
 
@@ -675,86 +706,74 @@ class HandlerQuadTree(InferResultHandler):
     def __init__(self, print_fn=print):
         # states
         self.states_updated = True
-        self.cnt_level = []
-        self.cnt_complete_level = []
+        self.tree_node_cnt = 0
+        self.level = {}
 
         # IO
         self.print_fn = print_fn
 
     def update_batch(self, result, inputs=None):
         _, _, fm_transforms, _, _ = result
-        for fm_transform in fm_transforms:
-            quadtree = {}
-            self.to_quadtree(fm_transform, quadtree, 0)
-            self.cnt_in_levels(quadtree, self.cnt_level, 0, 0)
-            quadtree_full = {}
-            self.to_quadtree(torch.ones_like(fm_transform), quadtree_full, 0)
-            self.cnt_in_levels(quadtree_full, self.cnt_complete_level, 0, 0)
+        with torch.no_grad():
+            for fm_transform in fm_transforms:
+                quadtreeM = self.to_quadtreeM(fm_transform)
+                self.tree_node_cnt += quadtreeM.sum()
+                quadtreeM_full = self.to_quadtreeM(torch.ones_like(fm_transform))
+                diff = quadtreeM_full - quadtreeM
+                for i in range(2, diff.max()):
+                    try:
+                        self.level[i] = self.level[i] + (diff == i).sum()
+                    except KeyError:
+                        self.level[i] = (diff == i).sum()
 
-    def to_quadtree(self, x, quadtree, indx):
+    def to_quadtreeM(self, x):
         """
         internal node: 1
         leaf 0: 0
         leaf other: 2
         Args:
-            x:
-            quadtree:
-            indx:
+            x (Torch.Tensor):
 
         Returns:
-
+            Quadtree Matrix representation
         """
-        nx, ny = x.size(-1), x.size(-2)
-        if nx > 1:
-            if ny > 1:
-                self.to_quadtree(x[..., :ny // 2, :nx // 2], quadtree, 4 * indx + 1)
-                self.to_quadtree(x[..., ny // 2:, :nx // 2], quadtree, 4 * indx + 2)
-                self.to_quadtree(x[..., :ny // 2, nx // 2:], quadtree, 4 * indx + 3)
-                self.to_quadtree(x[..., ny // 2:, nx // 2:], quadtree, 4 * indx + 4)
-                quadtree[indx] = (quadtree[4 * indx + 1] + quadtree[4 * indx + 2] +
-                                  quadtree[4 * indx + 3] + quadtree[4 * indx + 4]) > self.eps
-            else:
-                self.to_quadtree(x[..., :, :nx // 2], quadtree, 4 * indx + 1)
-                self.to_quadtree(x[..., :, nx // 2:], quadtree, 4 * indx + 3)
-                quadtree[4 * indx + 2] = -1
-                quadtree[4 * indx + 4] = -1
-                quadtree[indx] = (quadtree[4 * indx + 1] + quadtree[4 * indx + 3]) > self.eps
-        else:
-            if ny > 1:
-                self.to_quadtree(x[..., :ny // 2, :], quadtree, 4 * indx + 1)
-                self.to_quadtree(x[..., ny // 2:, :], quadtree, 4 * indx + 2)
-                quadtree[4 * indx + 3] = -1
-                quadtree[4 * indx + 4] = -1
-                quadtree[indx] = (quadtree[4 * indx + 1] + quadtree[4 * indx + 2]) > self.eps
-            else:
-                quadtree[indx] = (x.abs() > self.eps) * 2
+        if x.size(-1) > 1 or x.size(-2) > 1:
+            output = torch.zeros_like(x).byte()
+            TR = x[..., 1::2, 1::2].abs() > self.eps
+            DR = x[..., 0::2, 1::2].abs() > self.eps
+            TL = x[..., 1::2, 0::2].abs() > self.eps
+            DL = x[..., 0::2, 0::2].abs() > self.eps
 
-    def cnt_in_levels(self, quadtree, cnt_level, indx, level):
-        if len(cnt_level) <= level:
-            cnt_level.append(0)
-        if isinstance(quadtree[indx], torch.Tensor):
-            cnt = quadtree[indx].sum().item()
-            max_ = quadtree[indx].max()
-            if max_ == 2:
-                cnt /= 2
-                cnt_level[level] += cnt
-            elif max_ == 1:
-                self.cnt_level[level] += cnt
-                self.cnt_in_levels(quadtree, cnt_level, indx * 4 + 1, level + 1)
-                self.cnt_in_levels(quadtree, cnt_level, indx * 4 + 2, level + 1)
-                self.cnt_in_levels(quadtree, cnt_level, indx * 4 + 3, level + 1)
-                self.cnt_in_levels(quadtree, cnt_level, indx * 4 + 4, level + 1)
-            else:
-                assert max_ == 0, "unknown quadtree value"
-                assert quadtree[indx].min() == 0, "unknown quadtree value"
+            output[..., 1::2, 1::2] = TR
+            output[..., 0::2, 1::2] = DR
+            output[..., 1::2, 0::2] = TL
+            output[..., 0::2, 0::2] = DL
+            cutx = False
+            cuty = False
+            if output.size(-1) % 2:
+                cutx = True
+                TR = torch.cat([TR, torch.zeros(TR.size(0), TR.size(1), TR.size(2), 1).byte().cuda()], dim=-1)
+                DR = torch.cat([DR, torch.zeros(DR.size(0), DR.size(1), DR.size(2), 1).byte().cuda()], dim=-1)
+            if output.size(-2) % 2:
+                cuty = True
+                TR = torch.cat([TR, torch.zeros(TR.size(0), TR.size(1), 1, TR.size(3)).byte().cuda()], dim=-2)
+                TL = torch.cat([TL, torch.zeros(TL.size(0), TL.size(1), 1, TL.size(3)).byte().cuda()], dim=-2)
+
+            childs = self.to_quadtreeM((DL + TR + DR + TL).abs() > self.eps)
+            output[..., 0::2, 0::2] += childs
+            if cutx and cuty:
+                output[..., -1, -1] -= childs[..., -1, -1]
+
+            return output
         else:
-            assert quadtree[indx] == -1, "unknown quadtree value"
+            output = x.abs() > self.eps
+            return output
 
     def print_result(self):
         self.print_fn("==============================================================")
-        for level, cnt in enumerate(self.cnt_level):
-            self.print_fn("level {}: {}".format(level, cnt))
-        self.print_fn("==============complete ==============")
-        for level, cnt in enumerate(self.cnt_complete_level):
-            self.print_fn("level {}: {}".format(level, cnt))
+        self.print_fn("None zero tree node cnt{}".format(self.tree_node_cnt))
+        for key, value in self.level.items():
+            self.print_fn("level: {}, diff: {}".format(key, value))
         self.print_fn("==============================================================")
+
+

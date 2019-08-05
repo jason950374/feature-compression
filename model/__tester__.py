@@ -2,7 +2,7 @@ import torch
 from model.compress import Transform_seperate, AdaptiveDWT, softmin_round
 is_test_softmin_round = False
 is_test_Transform = False
-is_test_AdaptiveDWT = True
+is_test_AdaptiveDWT = False
 
 if __name__ == '__main__':
     if is_test_softmin_round:

@@ -45,6 +45,11 @@ def softmin_round(x, min_int, max_int, tau=1):
     return (weight * int_set).sum(-1)
 
 
+def softmin_bi(x, mid=0.5, tau=1.):
+    distant = (x - mid) * tau
+    return torch.sigmoid(distant)
+
+
 class EncoderDecoderPair(nn.Module):
     is_bypass = False
 
@@ -310,9 +315,9 @@ class MaskCompressDWT(EncoderDecoderPair):
         super(MaskCompressDWT, self).__init__()
         self.compressDWT = AdaptiveDWT(**kwargs_dwt) if is_adaptive else CompressDWT(**kwargs_dwt)
         self.softmin_tau = softmin_tau
-        self.freq_select = nn.Parameter(torch.ones(channel_num))
-        # self.freq_select = nn.Parameter(torch.cat([torch.ones(channel_num // 2),
-        #                                            torch.zeros(channel_num // 2)]))
+        # self.freq_select = nn.Parameter(torch.ones(channel_num))
+        self.freq_select = nn.Parameter(torch.cat([torch.ones(int(channel_num * (1 - ratio))),
+                                                   torch.zeros(int(channel_num * ratio))]))
         self.norm = channel_num * (1 - ratio)
         self.channel_num = channel_num
         self.ratio = ratio
@@ -345,7 +350,9 @@ class MaskCompressDWT(EncoderDecoderPair):
                 freq_select_norm = freq_select_norm.unsqueeze(dim=-1)
 
                 mask_hard = (1 - (freq_select_norm > threshold).float())
-                mask_soft = (1 - softmin_round(freq_select_norm, 0, 1, self.softmin_tau))
+                # mask_soft = (1 - softmin_round(freq_select_norm, 0, 1, self.softmin_tau))
+                # mask_soft = (1 - softmin_bi(freq_select_norm, 0.5, self.softmin_tau))
+                mask_soft = (1 - freq_select_norm)
                 mask = mask_hard.detach() + mask_soft - mask_soft.detach()
                 h_list[0] = h_list[0] * mask
 
@@ -619,47 +626,6 @@ class Transform(EncoderDecoderPair):
             self.inverse_matrix_reorder.data = torch.inverse(self.transform_matrix_reorder)
 
 
-class QuadTree(EncoderDecoderPair):
-    eps = 1e-5
-    # TODO what
-    def __init__(self):
-        super(QuadTree, self).__init__()
-
-    def forward(self, x, is_encoder=True):
-        if is_encoder:
-            q_tree = self.to_quadtree(x)
-
-            return q_tree, x.size()
-        else:
-            q_tree, size = x
-
-    def to_quadtree(self, x):
-        nx, ny = x.size(-1), x.size(-2)
-        if (x.abs() > self.eps).any():
-            if nx > 4 and ny > 4:
-                DL = x[..., :ny // 2, :nx // 2]
-                DR = x[..., :ny // 2, nx // 2:]
-                TL = x[..., ny // 2:, :nx // 2]
-                TR = x[..., ny // 2:, nx // 2:]
-                return self.to_quadtree(DL), self.to_quadtree(DR), self.to_quadtree(TL), self.to_quadtree(TR)
-            else:
-                return x[..., :, :]
-        else:
-            return x[..., :1, :1]
-
-    def from_quadtree(self, q_tree, size):
-        x_re = torch.ones(size)
-        nx, ny = size[-1], size[-2]
-        if type(q_tree) is tuple:
-            self.from_quadtree(q_tree[0], x[..., :ny // 2, :nx // 2])
-            self.from_quadtree(q_tree[1], x[..., :ny // 2, nx // 2:])
-            self.from_quadtree(q_tree[2], x[..., ny // 2:, :nx // 2])
-            self.from_quadtree(q_tree[3], x[..., ny // 2:, nx // 2:])
-        else:
-            x_re[:, :, :, :] = q_tree
-        return x_re
-
-
 class DownSampleBranch(nn.Sequential):
     r"""
     DownSample Branch. Given transforms will apply to both paths
@@ -786,7 +752,7 @@ class Compress(nn.Module):
         fm_transforms = self.compress(x, is_encoder=True)
         x = self.compress(fm_transforms, is_encoder=False)
 
-        return x, fm_transforms # [0]  #[1][0]  # TODO ugly
+        return x, fm_transforms[0]  #[1][0]  # TODO ugly
 
     def update(self):
         self.compress.update()

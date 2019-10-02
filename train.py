@@ -189,7 +189,7 @@ def train(train_queue, model, criterion, optimizer, cur_epoch, args, warm_up=Fal
         target = Variable(target).cuda(async=True)
 
         # Forward propagation
-        logits, _, _ = model(x)
+        logits, _, _, _, _ = model(x)
         loss = criterion(logits, target)
 
         optimizer.zero_grad()
@@ -224,7 +224,7 @@ def infer(test_queue, model):
             x = Variable(x).cuda()
             target = Variable(target).cuda(async=True)
 
-            logits, _, _ = model(x)
+            logits, _, _, _, _ = model(x)
 
             prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
             n = x.size(0)

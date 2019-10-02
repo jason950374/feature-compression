@@ -75,7 +75,7 @@ def main():
     hd_dwt_fm = infer_result_handler.HandlerDWT_Fm(print_fn=logging.info,
                                                    code_length_dict=code_length_dict,
                                                    save=save)
-    hd_quan_fm = infer_result_handler.HandlerQuanti(print_fn=logging.info,
+    hd_quan_fm = infer_result_handler.HandlerQuanti(print_fn=logging.info, save=save,
                                                     code_length_dict=u_code_length_dict)
     hd_quad_tree = infer_result_handler.HandlerQuadTree(print_fn=logging.info)
 

@@ -11,8 +11,9 @@ import os
 import time
 import random
 import torch.backends.cudnn as cudnn
+torch.autograd.set_detect_anomaly(True)
 
-from compress_setups import compress_list_gen_branch
+from compress_setups import compress_list_gen_branch, compress_list_gen_block
 from model.ResNet import ResNetCifar, resnet18
 from torch.autograd import Variable
 from model.compress import *
@@ -46,14 +47,16 @@ parser.add_argument('--rand_factor', type=float, default=0, help="rand_factor")
 parser.add_argument('--tauMask', type=float, default=2, help="tau for softmin in MaskCompressDWT")
 parser.add_argument('--tauLoss', type=float, default=2, help="tau for tanh in sparsity loss")
 parser.add_argument('--retainRatio', type=float, default=0.75, help="retaining ratio for MaskCompressDWT")
-parser.add_argument('--biloss_coe', type=float, default=1e-3, help="bipolar Loss for s")
+parser.add_argument('--biloss_coe', type=float, default=1e-2, help="bipolar Loss for s")
 parser.add_argument('--gamma', type=float, default=0.1, help="gamma")
 
 args = parser.parse_args()
 # args.save = 'ckpts/retrain_{}_{}'.format(args.wavelet, args.load[6:-9])
-args.save = 'ckpts/retrain_tauLoss_long_{}_biLoss_{}_lr_{}_spLoss_{}_retainRatio_{}_{}'.format(
-    args.tauLoss, args.biloss_coe, args.learning_rate, args.l1_coe, args.retainRatio, time.strftime("%m%d_%H%M%S"))
-# args.save = 'ckpts/retrain_long_lr_{}_{}'.format(args.learning_rate, time.strftime("%m%d_%H%M%S"))
+# args.save = 'ckpts/retrain_imageNet_s_sofmin_tau_{}_long_biLoss_{}_lr_{}_retainRatio_{}_{}'.\
+#    format(args.tauMask, args.biloss_coe, args.learning_rate, args.retainRatio, time.strftime("%m%d_%H%M%S"))
+# args.save = 'ckpts/retrain_linear_long_fix_reverse_lr_{}_retainRatio_{}_{}'.\
+#      format(args.learning_rate, args.retainRatio, time.strftime("%m%d_%H%M%S"))
+args.save = 'ckpts/retrain_long_lr_{}_{}_{}'.format(args.learning_rate, args.wavelet, time.strftime("%m%d_%H%M%S"))
 
 args.learning_rate = args.learning_rate * args.batch_size / 256
 
@@ -71,6 +74,7 @@ data_time = meter.AverageMeter()
 if args.dataset == 'cifar10':
     args.num_classes = 10
     args.epochs = 80
+    # args.epochs = 50
     args.usage_weight = 2
     utils.multiply_adds = 2
 elif args.dataset == 'cifar100':
@@ -125,35 +129,97 @@ def main():
 
     logging.info("param size = %fMB", utils.count_parameters_in_MB(model))
 
-    if args.dataset == 'imageNet':
-        net_dic = torch.load(args.load)
-        net_dic_fix = utils.imagenet_model_graph_mapping(net_dic, [2, 2, 2, 2])
-        model.load_state_dict(net_dic_fix)
-    else:
-        utils.load(model, args)
+    if args.epoch_start == 0:
+        if args.dataset == 'imageNet':
+            net_dic = torch.load(args.load)
+            net_dic_fix = utils.imagenet_model_graph_mapping(net_dic, [2, 2, 2, 2])
+            model.load_state_dict(net_dic_fix)
+        else:
+            utils.load(model, args)
 
+    freq_selects = None
     if args.dataset == 'cifar10':
         # quick test for this ckpts: cifar10_resnet20_0409_184724
         maximum_fm_branch = [5.2, 6.7, 5.3, 5.8, 6.7, 7.6, 4.6, 5.7, 36]
         dwt_coe_branch = [0.018, 0.021, 0.022, 0.020, 0.019, 0.017, 0.018, 0.014, 0.047]
         maximum_fm_block = [2.7, 2.9, 2.7, 2.5, 2.3, 2.3, 2.7, 2.7, 3.4]
+        dwt_coe_block = [0.015, 0.017, 0.024, 0.030, 0.019, 0.012, 0.029, 0.014, 0.0060]
         channel = [16, 16, 16, 32, 32, 32, 64, 64, 64]
+
+        '''if args.retainRatio == 0.25:
+            freq_selects = [
+                [1, 0, 1, 1, 1, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1],
+                [1, 0, 1, 0, 1, 0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1],
+                [1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1],
+                [1, 1, 0, 1, 1, 1, 1, 1, 1, 0, 1, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1],
+                [1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1],
+                [0, 1, 0, 1, 1, 1, 1, 1, 1, 0, 1, 0, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                [1, 1, 0, 0, 1, 0, 0, 0, 1, 1, 1, 0, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1,
+                 1, 1, 0, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1],
+                [0, 1, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+                 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1],
+                [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+                 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+            ]
+        elif args.retainRatio == 0.75:
+            freq_selects = [
+                [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0],
+                [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0],
+                [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0],
+                [0, 0, 0, 1, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0],
+                [0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0],
+                [0, 0, 0, 1, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0],
+                [0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0,
+                 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1,
+                 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0],
+                [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+                 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+            ]
+        elif args.retainRatio == 0.5:
+            freq_selects = [
+                [1, 0, 0, 0, 1, 0, 0, 1, 0, 1, 1, 1, 0, 1, 1, 0],
+                [1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 1, 1, 1, 1, 0],
+                [1, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0],
+                [1, 0, 0, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1],
+                [1, 0, 0, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1],
+                [1, 1, 0, 1, 1, 0, 1, 1, 0, 0, 1, 0, 1, 0, 1, 1, 1, 0, 0, 1, 0, 1, 0, 1, 0, 1, 1, 0, 0, 0, 0, 0],
+                [1, 1, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 1, 1, 1, 0, 0,
+                 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 1, 1, 0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 1],
+                [0, 1, 0, 0, 1, 0, 1, 1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1,
+                 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1, 1],
+                [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+                 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+            ]
+        else:
+            freq_selects = None'''
     elif args.dataset == 'imageNet':
         # quick test for pretrain resnet18
         maximum_fm_branch = [11, 15.5, 14, 11.5, 8.5, 14, 11.5, 101]
         dwt_coe_branch = [0.010, 0.013, 0.0094, 0.012, 0.010, 0.0061, 0.0069, 0.036]
+        maximum_fm_block = []
+        dwt_coe_block = []
         channel = [64, 64, 128, 128, 256, 256, 512, 512]
     else:
         raise NotImplementedError(
             '{} dataset is not supported. Only support cifar10, cifar100 and imageNet.'.format(args.dataset))
 
-    compress_list = compress_list_gen_branch(channel, maximum_fm_branch, args.wavelet, args.bit,
-                                             norm_mode=args.norm_mode,
-                                             retain_ratio=args.retainRatio,
-                                             tau_mask=args.tauMask,
-                                             dwt_coe_branch=dwt_coe_branch)
+    compress_list_branch = compress_list_gen_branch(channel, maximum_fm_branch, args.wavelet, args.bit,
+                                                    norm_mode=args.norm_mode,
+                                                    retain_ratio=args.retainRatio,
+                                                    tau_mask=args.tauMask,
+                                                    dwt_coe_branch=dwt_coe_branch, freq_selects=freq_selects)
 
-    model.compress_replace_branch(compress_list)
+    '''compress_list_block = compress_list_gen_block(channel, maximum_fm_block, args.wavelet, args.bit,
+                                                  norm_mode=args.norm_mode,
+                                                  retain_ratio=args.retainRatio,
+                                                  dwt_coe_block=dwt_coe_block)'''
+
+    model.compress_replace_branch(compress_list_branch)
+    # model.compress_replace_inblock(compress_list_block)
+
+    if args.epoch_start != 0:
+        utils.load(model, args)
 
     utils.save_checkpoint(model, False, args.save, 0)
 
@@ -162,7 +228,7 @@ def main():
     settings = [
         {
             'setting_names': utils.get_param_names(model, 'freq_select'),
-            'lr': 0, # args.learning_rate,
+            'lr': 0,  # args.learning_rate,
             'weight_decay': 0,
             'momentum': 0
         },
@@ -176,10 +242,10 @@ def main():
     params = utils.optimizer_setting_separator(model, settings)
 
     optimizer = torch.optim.SGD(
-        params,
-        # model.parameters(),
-        # lr=args.learning_rate,
-        lr=0,
+        # params,
+        model.parameters(),
+        lr=args.learning_rate,
+        # lr=0,
         momentum=args.momentum,
         weight_decay=args.weight_decay
     )
@@ -192,6 +258,7 @@ def main():
 
     if args.dataset == 'cifar10' or args.dataset == 'cifar100':
         milestones = [40, 70]
+        # milestones = [20]
     elif args.dataset == 'imageNet':
         milestones = [20, 40]
     else:
@@ -199,41 +266,18 @@ def main():
 
     scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=milestones, gamma=args.gamma)
     length_code_dict = utils.gen_signed_seg_dict(args.k, 2 ** (args.bit - 1), len_key=True)
-    # lr_list = [0, 0.0001, 0.001, 0.01, 0.1]
-    '''
-    for epoch in range(0, 10):
-        # optimizer.param_groups[0]['initial_lr'] = args.learning_rate * lr_list[epoch]
-        # optimizer.param_groups[0]['lr'] = args.learning_rate * lr_list[epoch]
-        is_best = False
-        logging.info('[Warm] Epoch = %d', epoch)
-        train(train_queue, model, criterion, optimizer, epoch, args, milestones, length_code_dict)
 
-        for compress in model.stages.compress:
-            indx = compress.compress.module[-1].reorder()
-            compress.compress.separate.reorder(indx)
-        model.update()
-        this_acc, _ = infer(test_queue, model)
+    # optimizer.param_groups[1]['initial_lr'] = args.learning_rate
+    # optimizer.param_groups[1]['lr'] = args.learning_rate
 
-        if this_acc > best_test_acc:
-            best_test_acc = this_acc
-            is_best = True
-
-        logging.info(
-            '[Test] Epoch:%d/%d acc %.2f%%; best %.2f%%', epoch, args.epochs, this_acc, best_test_acc)
-
-        logging.info('Saved into %s', args.save)
-
-        utils.save_checkpoint(model, is_best, args.save, epoch)
-        logging.info('============================================================================')'''
-
-    optimizer.param_groups[0]['initial_lr'] = args.learning_rate
-    optimizer.param_groups[0]['lr'] = args.learning_rate
-
-    for epoch in range(0, args.epochs):
+    for _ in range(0, args.epoch_start):
         scheduler.step()
-        if epoch <= 5:
-            optimizer.param_groups[2]['initial_lr'] = args.learning_rate * (10 ** (epoch - 5))
-            optimizer.param_groups[2]['lr'] = args.learning_rate * (10 ** (epoch - 5))
+
+    for epoch in range(args.epoch_start, args.epochs):
+        scheduler.step()
+        '''if epoch <= 5:
+            optimizer.param_groups[0]['initial_lr'] = args.learning_rate * (10 ** (epoch - 5))
+            optimizer.param_groups[0]['lr'] = args.learning_rate * (10 ** (epoch - 5))'''
         logging.info('[Train] Epoch = %d , LR = %e', epoch, scheduler.get_lr()[0])
         is_best = False
         train(train_queue, model, criterion, optimizer, epoch, args, milestones, length_code_dict)
@@ -278,11 +322,10 @@ def train(train_queue, model, criterion, optimizer, cur_epoch, args, milestones,
 
     total_epoch = 5 if warm_up else args.epochs
     suffix = 'Warm Up' if warm_up else 'Train'
-    biloss_coe = 0
-    if cur_epoch < 5:
+    '''if cur_epoch < 5:
         biloss_coe = args.biloss_coe * (10 ** (cur_epoch - 5))
     else:
-        biloss_coe = args.biloss_coe
+        biloss_coe = args.biloss_coe'''
 
     for step, (x, target) in enumerate(train_queue):
         data_time.update(time.time() - end)
@@ -297,7 +340,7 @@ def train(train_queue, model, criterion, optimizer, cur_epoch, args, milestones,
         classloss = criterion(logits, target)
         loss += classloss
         n = x.size(0)
-
+        '''
         if args.l1_coe > 1e-20:
             # l1 = utils.iterable_l1(fm_transforms)
             freq_selects = [compress.compress.module[-1].freq_select.detach() for compress in model.stages.compress]
@@ -343,7 +386,7 @@ def train(train_queue, model, criterion, optimizer, cur_epoch, args, milestones,
                     threshold = (threshold + threshold2) / 2
                 biloss += utils.bipolar(compress.compress[-1].freq_select,
                                         threshold.detach())
-            loss += (biloss * biloss_coe)
+            loss += (biloss * biloss_coe)'''
 
         optimizer.zero_grad()
         loss.backward()
@@ -353,15 +396,15 @@ def train(train_queue, model, criterion, optimizer, cur_epoch, args, milestones,
         nn.utils.clip_grad_norm_(param_trm, 0.1)
         optimizer.step()
 
-        model.update()
+        # model.update()
 
         prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
 
-        biloss_meter.update(biloss.item(), n)
-        classloss_meter.update(classloss.item(), n)
-
         top1.update(prec1.item(), n)
         top5.update(prec5.item(), n)
+
+        # biloss_meter.update(biloss.item(), n)
+        classloss_meter.update(classloss.item(), n)
 
         # measure elapsed time
         batch_time.update(time.time() - end)

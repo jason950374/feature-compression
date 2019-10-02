@@ -4,11 +4,24 @@ import torch
 import torch.nn.functional as F
 import functional as my_f
 from collections import OrderedDict
-
 from functional.dwt import lowlevel
 
 
 def random_round(x, rand_factor=0.):
+    r"""
+    Random_rounded, the output is hard rounded with random sample
+    The BP pass is already included with:
+
+    .. math::
+        \frac{\partial f(x)}{\partial x} = 1
+
+    Args:
+        x (torch.Tensor): input
+        rand_factor (float): the strength of random noise
+
+    Returns:
+        rounded x (torch.Tensor)
+    """
     assert rand_factor > -10 ** -10, "rand_factor must be positive"
     x_org = x
     # if rand_factor == 0, do not do torch.rand_like to speed up? (not sure the effectiveness)
@@ -22,18 +35,26 @@ def random_round(x, rand_factor=0.):
 
 
 def softmin_round(x, min_int, max_int, tau=1):
-    """
+    r"""
+    Soft rounded with softmin as quantization symbol weight
 
+    .. math::
+        \frac{\sum_{min\_int \leq x_q \leq max\_int}
+                {x_q e^{-\tau \left\lVert x-x_q \right\rVert}}}
+            {\sum _{min\_int \leq x_q \leq max\_int}
+                e^{-\tau \left\lVert x-x_{q2} \right\rVert}}
+
+    Avoid to use this. It's very slow
     Args:
         x (torch.Tensor): input
-        min_int (int):
-        max_int (int):
-        tau (float):
+        min_int (int): The minimum int (include)
+        max_int (int): The maximum int (include)
+        tau (float): The temperature for softmin function
 
     Returns:
-        rounded x (torch.Tensor)
+        soft rounded x (torch.Tensor)
     """
-    int_set = torch.arange(min_int, max_int+1, step=1.)
+    int_set = torch.arange(min_int, max_int + 1, step=1.)
     in_device = x.get_device()
     if in_device >= 0:  # On gpu
         int_set = int_set.to(in_device)
@@ -46,11 +67,27 @@ def softmin_round(x, min_int, max_int, tau=1):
 
 
 def softmin_bi(x, mid=0.5, tau=1.):
+    r"""
+    Implement softmin_round with sigmoid when quantization symbol is only {0, 2*mid}
+    Significant speed up, always use this instead of softmin_round when possible
+
+    .. math::
+        \frac{1}{1 + e^{\tau(-2x+2(1-\gamma))}}
+
+    Args:
+        x (torch.Tensor): Input
+        mid (float): Middle value. Position of max gradient
+        tau (float): The temperature for sigmoid function
+
+    Returns:
+
+    """
     distant = (x - mid) * tau
     return torch.sigmoid(distant)
 
 
 class EncoderDecoderPair(nn.Module):
+    # TODO: finishing doc
     is_bypass = False
 
     def __init__(self):
@@ -64,12 +101,14 @@ class EncoderDecoderPair(nn.Module):
 
 
 class CompressDCT(EncoderDecoderPair):
-    """
+    r"""
         Compress with DCT and Q table
+
         Args:
             bit (int): Bits after quantization
             q_table: Quantization table
     """
+
     def __init__(self, bit=8, q_table=None):
         super(CompressDCT, self).__init__()
         self.bit = bit
@@ -79,7 +118,6 @@ class CompressDCT(EncoderDecoderPair):
             assert q_table.size() == (8, 8)
             self.register_buffer('q_table', q_table)
 
-    # TODO  and BP path
     def forward(self, x, is_encoder=True):
         assert len(x.size()) == 4, "Dimension of x need to be 4, which corresponds to (N, C, H, W)"
         N, C, H, W = x.size()
@@ -91,9 +129,9 @@ class CompressDCT(EncoderDecoderPair):
             fm_transform = torch.zeros_like(x)
             for i_h in range(H // 8):
                 for i_w in range(W // 8):
-                    x_dct = my_f.dct_2d(x[..., 8*i_h:8*(i_h+1), 8*i_w:8*(i_w+1)])
-                    x_dct = torch.round((x_dct / q_table))
-                    x_dct = x_dct.clamp(-2 ** (self.bit - 1), 2 ** (self.bit-1) - 1)
+                    x_dct = my_f.dct_2d(x[..., 8 * i_h:8 * (i_h + 1), 8 * i_w:8 * (i_w + 1)])
+                    x_dct = random_round(x_dct / q_table)
+                    x_dct = x_dct.clamp(-2 ** (self.bit - 1), 2 ** (self.bit - 1) - 1)
                     fm_transform[..., 8 * i_h:8 * (i_h + 1), 8 * i_w:8 * (i_w + 1)] = x_dct
 
                 if r_w != 0:
@@ -101,9 +139,9 @@ class CompressDCT(EncoderDecoderPair):
                     for i in range(r_w):
                         q_table_w[..., i] = q_table[..., i * 8 // r_w]
 
-                    x_dct = my_f.dct_2d(x[..., 8*i_h:8*(i_h+1), -r_w:])
-                    x_dct = torch.round((x_dct / q_table_w))
-                    x_dct = x_dct.clamp(-2 ** (self.bit - 1), 2 ** (self.bit-1) - 1)
+                    x_dct = my_f.dct_2d(x[..., 8 * i_h:8 * (i_h + 1), -r_w:])
+                    x_dct = random_round(x_dct / q_table_w)
+                    x_dct = x_dct.clamp(-2 ** (self.bit - 1), 2 ** (self.bit - 1) - 1)
                     fm_transform[..., 8 * i_h:8 * (i_h + 1), -r_w:] = x_dct
 
             if r_h != 0:
@@ -113,8 +151,8 @@ class CompressDCT(EncoderDecoderPair):
                         q_table_h[..., i, :] = q_table[..., i * 8 // r_h, :]
 
                     x_dct = my_f.dct_2d(x[..., -r_h:, 8 * i_w:8 * (i_w + 1)])
-                    x_dct = torch.round((x_dct / q_table_h))
-                    x_dct = x_dct.clamp(-2 ** (self.bit - 1), 2 ** (self.bit-1) - 1)
+                    x_dct = random_round((x_dct / q_table_h))
+                    x_dct = x_dct.clamp(-2 ** (self.bit - 1), 2 ** (self.bit - 1) - 1)
                     fm_transform[..., -r_h:, 8 * i_w:8 * (i_w + 1)] = x_dct
                 if r_w != 0:
                     q_table_h_w = q_table[..., :r_h, :r_w]
@@ -123,8 +161,8 @@ class CompressDCT(EncoderDecoderPair):
                             q_table_h_w[..., i, j] = q_table[..., i * 8 // r_h, j * 8 // r_w]
 
                     x_dct = my_f.dct_2d(x[..., -r_h:, -r_w:])
-                    x_dct = torch.round((x_dct / q_table_h_w))
-                    x_dct = x_dct.clamp(-2 ** (self.bit - 1), 2 ** (self.bit-1) - 1)
+                    x_dct = random_round((x_dct / q_table_h_w))
+                    x_dct = x_dct.clamp(-2 ** (self.bit - 1), 2 ** (self.bit - 1) - 1)
                     fm_transform[..., -r_h:, -r_w:] = x_dct
             return fm_transform
         else:
@@ -153,6 +191,7 @@ class CompressDWT(EncoderDecoderPair):
     """
     Compress with DWT and Q table
     """
+
     def __init__(self, level=1, bit=8, q_table=None, wave='haar', rand_factor=0.):
         """
         Args:
@@ -182,11 +221,21 @@ class CompressDWT(EncoderDecoderPair):
             if quanti:
                 ll = random_round(ll, self.rand_factor)
                 ll = ll.clamp(-2 ** (self.bit - 1), 2 ** (self.bit - 1) - 1)
+                '''
+                ll_soft = softmin_round(ll, min_int=-2 ** (self.bit - 1), max_int=2 ** (self.bit - 1) - 1, tau=2)
+                ll = torch.round(ll)
+                ll = ll.clamp(-2 ** (self.bit - 1), 2 ** (self.bit - 1) - 1)
+                ll = ll.detach() + ll_soft - ll_soft.detach()'''
             for i in range(self.level):
                 xh[i] = xh[i] / self.q_table[i]
                 if quanti:
                     xh[i] = random_round(xh[i], self.rand_factor)
                     xh[i] = xh[i].clamp(-2 ** (self.bit - 1), 2 ** (self.bit - 1) - 1)
+                    '''
+                    xh_soft = softmin_round(xh[i], min_int=-2 ** (self.bit - 1), max_int=2 ** (self.bit - 1) - 1, tau=2)
+                    xh_hard = torch.round(xh[i])
+                    xh_hard = xh_hard.clamp(-2 ** (self.bit - 1), 2 ** (self.bit - 1) - 1)
+                    xh[i] = xh_hard.detach() + xh_soft - xh_soft.detach()'''
 
             return ll, xh, size
 
@@ -303,7 +352,7 @@ class AdaptiveDWT(EncoderDecoderPair):
 
 
 class MaskCompressDWT(EncoderDecoderPair):
-    def __init__(self, kwargs_dwt, channel_num, is_adaptive=False, ratio=0.5, softmin_tau=1):
+    def __init__(self, kwargs_dwt, channel_num, freq_select=None, is_adaptive=False, ratio=0.5, softmin_tau=1):
         """
         Args:
             kwargs_dwt: keyword args for dwt
@@ -315,9 +364,12 @@ class MaskCompressDWT(EncoderDecoderPair):
         super(MaskCompressDWT, self).__init__()
         self.compressDWT = AdaptiveDWT(**kwargs_dwt) if is_adaptive else CompressDWT(**kwargs_dwt)
         self.softmin_tau = softmin_tau
-        # self.freq_select = nn.Parameter(torch.ones(channel_num))
-        self.freq_select = nn.Parameter(torch.cat([torch.ones(int(channel_num * (1 - ratio))),
-                                                   torch.zeros(int(channel_num * ratio))]))
+        if freq_select is None:
+            self.freq_select = nn.Parameter(torch.ones(channel_num))
+        else:
+            self.freq_select = nn.Parameter(torch.FloatTensor(freq_select))
+        # self.freq_select = nn.Parameter(torch.cat([torch.ones(int(channel_num * (1 - ratio))),
+        #                                            torch.zeros(int(channel_num * ratio))]))
         self.norm = channel_num * (1 - ratio)
         self.channel_num = channel_num
         self.ratio = ratio
@@ -336,14 +388,12 @@ class MaskCompressDWT(EncoderDecoderPair):
                 freq_select_norm = (freq_select_clamp / freq_select_clamp.sum()) * self.norm
                 # freq_select_norm = (freq_select_clamp - freq_select_clamp.min()) / \
                 #                    (freq_select_clamp.max() - freq_select_clamp.min() + 1e-10)
-                if abs(self.ratio - 0.5) < 0.000001:
-                    threshold = freq_select_norm.detach().median()
+
+                kth = int(freq_select_norm.size(0) * self.ratio)
+                if kth != 0:
+                    threshold, _ = torch.kthvalue(freq_select_norm.detach(), kth)
                 else:
-                    kth = int(freq_select_norm.size(0) * self.ratio)
-                    if kth != 0:
-                        threshold, _ = torch.kthvalue(freq_select_norm.detach(), kth)
-                    else:
-                        threshold = 0
+                    threshold = 0
 
                 freq_select_norm = freq_select_norm.unsqueeze(dim=-1)
                 freq_select_norm = freq_select_norm.unsqueeze(dim=-1)
@@ -351,8 +401,8 @@ class MaskCompressDWT(EncoderDecoderPair):
 
                 mask_hard = (1 - (freq_select_norm > threshold).float())
                 # mask_soft = (1 - softmin_round(freq_select_norm, 0, 1, self.softmin_tau))
-                # mask_soft = (1 - softmin_bi(freq_select_norm, 0.5, self.softmin_tau))
-                mask_soft = (1 - freq_select_norm)
+                mask_soft = (1 - softmin_bi(freq_select_norm, 1 - self.ratio, self.softmin_tau))
+                # mask_soft = (1 - freq_select_norm)
                 mask = mask_hard.detach() + mask_soft - mask_soft.detach()
                 h_list[0] = h_list[0] * mask
 
@@ -400,6 +450,7 @@ class QuantiUnsign(EncoderDecoderPair):
         q_factor (float): scale factor to match the range  after quantization
         is_shift (bool): Shift range of value from unsigned to symmetric signed
     """
+
     def __init__(self, bit=8, q_factor=1., is_shift=False):
         super(QuantiUnsign, self).__init__()
         self.bit = bit
@@ -412,6 +463,12 @@ class QuantiUnsign(EncoderDecoderPair):
             if quanti:
                 x = random_round(x)
                 x = x.clamp(0, 2 ** self.bit - 1)
+                '''
+                x_soft = softmin_round(x, min_int=0, max_int=2 ** self.bit - 1, tau=2)
+                x = torch.round(x)
+                x = x.clamp(0, 2 ** self.bit - 1)
+                x = x.detach() + x_soft - x_soft.detach()
+                '''
             if self.is_shift:
                 x = x - 2 ** (self.bit - 1)
             return x
@@ -464,6 +521,7 @@ class Transform_seperate(EncoderDecoderPair):
     Args:
         channel_num (int): The input channel number
     """
+
     def __init__(self, channel_num, norm_mode='l1', init_value=None):
         super(Transform_seperate, self).__init__()
         self.transform_matrix = nn.Parameter(torch.Tensor(channel_num, channel_num))
@@ -551,6 +609,7 @@ class Transform(EncoderDecoderPair):
     Args:
         channel_num (int): The input channel number
     """
+
     def __init__(self, channel_num, norm_mode='l1', init_value=None):
         super(Transform, self).__init__()
         self.transform_matrix = nn.Parameter(torch.Tensor(channel_num, channel_num))
@@ -634,6 +693,7 @@ class DownSampleBranch(nn.Sequential):
     Args:
             *args  (List[EncoderDecoderPair], Tuple[EncoderDecoderPair]): Sequence of EncoderDecoderPair
     """
+
     def __init__(self, *args):
         super(DownSampleBranch, self).__init__()
 
@@ -696,6 +756,7 @@ class BypassSequential(nn.Sequential):
     Args:
             *args  (List[EncoderDecoderPair], Tuple[EncoderDecoderPair]): Sequence of EncoderDecoderPair
     """
+
     def __init__(self, *args):
         super(BypassSequential, self).__init__()
 
@@ -744,6 +805,7 @@ class Compress(nn.Module):
     Returns:
         x, fm_transforms
     """
+
     def __init__(self, compress):
         super(Compress, self).__init__()
         self.compress = compress
@@ -752,7 +814,7 @@ class Compress(nn.Module):
         fm_transforms = self.compress(x, is_encoder=True)
         x = self.compress(fm_transforms, is_encoder=False)
 
-        return x, fm_transforms[0]  #[1][0]  # TODO ugly
+        return x, fm_transforms[0]  # TODO ugly
 
     def update(self):
         self.compress.update()

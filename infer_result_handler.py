@@ -124,7 +124,7 @@ class HandlerFm(InferResultHandler):
 
 
 class HandlerQuanti(InferResultHandler):
-    def __init__(self, print_fn=print, code_length_dict=None, print_sparsity=True, print_range_all=False,
+    def __init__(self, print_fn=print, save="./", code_length_dict=None, print_sparsity=True, print_range_all=False,
                  print_range_layer=True, is_inblock=False, is_branch=True):
         # State
         self.states_updated = False
@@ -137,12 +137,12 @@ class HandlerQuanti(InferResultHandler):
         self.code_len = 0
         self.is_inblock = is_inblock
         self.is_branch = is_branch
-        if code_length_dict is not None:
-            self.hist_meter_branch = HistMeter(code_length_dict)
-            self.hist_meter_block = HistMeter(code_length_dict)
+        self.hist_meters_branch = []
+        self.hist_meters_block = []
 
         # IO
         self.print_fn = print_fn
+        self.save = save
 
         # Config
         self.code_length_dict = code_length_dict
@@ -166,7 +166,10 @@ class HandlerQuanti(InferResultHandler):
                         self.max_mins_block.append(MaxMinMeter())
 
                     self.max_mins_branch[layer_num].update(fm_transform_branch_cuda)
-                    self.hist_meter_branch.update(fm_transform_branch_cuda)
+
+                    if len(self.hist_meters_branch) <= layer_num:
+                        self.hist_meters_branch.append(HistMeter(self.code_length_dict))
+                    self.hist_meters_branch[layer_num].update(fm_transform_branch_cuda)
             if self.is_inblock:
                 for layer_num, fm_transform_block in enumerate(fm_transforms_block):
                     fm_transform_block_cuda = fm_transform_block.cuda()
@@ -180,14 +183,22 @@ class HandlerQuanti(InferResultHandler):
                         self.max_mins_block.append(MaxMinMeter())
 
                     self.max_mins_block[layer_num].update(fm_transform_block_cuda)
-                    self.hist_meter_block.update(fm_transform_block_cuda)
+
+                    if len(self.hist_meters_block) <= layer_num:
+                        self.hist_meters_block.append(HistMeter(self.code_length_dict))
+                    self.hist_meters_block[layer_num].update(fm_transform_block_cuda)
             self.states_updated = False
 
     def print_result(self):
         if not self.states_updated:
+            self.code_len = 0
             if self.code_length_dict is not None:
-                self.code_len = self.hist_meter_branch.get_bit_cnt(self.code_length_dict)
-                self.code_len += self.hist_meter_block.get_bit_cnt(self.code_length_dict)
+                for layer_num, meter in enumerate(self.hist_meters_branch):
+                    self.code_len += meter.get_bit_cnt(self.code_length_dict)
+                    meter.save_hist_json('{}/branch_Layer{}_XL.json'.format(self.save, layer_num))
+                for layer_num, meter in enumerate(self.hist_meters_block):
+                    self.code_len += meter.get_bit_cnt(self.code_length_dict)
+                    meter.save_hist_json('{}/block_Layer{}_XL.json'.format(self.save, layer_num))
             if self.print_range_all:
                 for layer_num, meter in enumerate(self.max_mins_branch):
                     self.max = max(self.max, meter.max)
@@ -195,6 +206,7 @@ class HandlerQuanti(InferResultHandler):
             self.states_updated = True
 
         self.print_fn("==============================================================")
+
         if self.print_sparsity:
             self.print_fn("feature_maps == 0: {}".format(self.zero_cnt))
             self.print_fn("feature_maps size: {}".format(self.size_flat))
@@ -214,8 +226,10 @@ class HandlerQuanti(InferResultHandler):
     def set_config(self, code_length_dict=None, print_sparsity=True, print_range_all=False, print_range_layer=True):
         self.code_length_dict = code_length_dict
         if self.code_length_dict is not None:
-            self.code_len = self.hist_meter_branch.get_bit_cnt(self.code_length_dict)
-            self.code_len += self.hist_meter_block.get_bit_cnt(self.code_length_dict)
+            for meter in self.hist_meters_branch:
+                self.code_len += meter.get_bit_cnt(self.code_length_dict)
+            for meter in self.hist_meters_block:
+                self.code_len += meter.get_bit_cnt(self.code_length_dict)
         self.states_updated = True
         self.print_sparsity = print_sparsity
         self.print_range_all = print_range_all
@@ -301,7 +315,6 @@ class HandlerDWT_Fm(InferResultHandler):
 
         # IO
         self.print_fn = print_fn
-
         self.save = save
 
         # Config
@@ -333,7 +346,6 @@ class HandlerDWT_Fm(InferResultHandler):
 
     def _update_dwt(self, feature_map_dwt, layer_num, max_mins, hist_meters, mean_meters):
         assert type(feature_map_dwt) is tuple, "feature_map_dwt is not tuple, make sure it's DWT"
-
         XL, XH, size_cur = feature_map_dwt
         XL_cuda = XL.cuda()
 
@@ -471,7 +483,7 @@ class HandlerDWT_Fm(InferResultHandler):
             for level, meter in enumerate(abs_mean[1]):
                 self.print_fn("mean XH{} in layer{}: {}".format(level, layer_num, meter.avg))
         for layer_num, abs_mean in enumerate(self.abs_mean_block):
-            self.print_fn("mean XL in branch of  layer{}: {}".format(layer_num, abs_mean[0].avg))
+            self.print_fn("mean XL in block of  layer{}: {}".format(layer_num, abs_mean[0].avg))
             for level, meter in enumerate(abs_mean[1]):
                 self.print_fn("mean XH{} in layer{}: {}".format(level, layer_num, meter.avg))
 
@@ -498,7 +510,7 @@ class HandlerMaskedDWT_Fm(InferResultHandler):
         self.max_ch = []
         self.min_ch = []
         self.is_inblock = is_inblock
-        self.is_branch = is_branch  # TODO
+        self.is_branch = is_branch  # TODO: add is_branch vs. is_inblock
 
         # IO
         self.print_fn = print_fn

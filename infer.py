@@ -122,12 +122,18 @@ def main():
         # quick test for this ckpts: cifar10_resnet20_0409_184724
         maximum_fm_branch = [5.2, 6.7, 5.3, 5.8, 6.7, 7.6, 4.6, 5.7, 36]
         dwt_coe_branch = [0.018, 0.021, 0.022, 0.020, 0.019, 0.017, 0.018, 0.014, 0.047]
+        # dwt_coe_branch = [0.019, 0.014, 0.017, 0.017, 0.014, 0.013, 0.0081, 0.010, 0.025]
+        # dwt_coe_branch = [0.013, 0.0098, 0.013, 0.012, 0.011, 0.0094, 0.0072, 0.012, 0.024]
+        # dwt_coe_branch = [0.011, 0.0080, 0.010, 0.0075, 0.0075, 0.0095, 0.0086, 0.0099, 0.014]
         maximum_fm_block = [2.7, 2.9, 2.7, 2.5, 2.3, 2.3, 2.7, 2.7, 3.4]
+        dwt_coe_block = [0.015, 0.017, 0.024, 0.030, 0.019, 0.012, 0.029, 0.014, 0.0060]
         channel = [16, 16, 16, 32, 32, 32, 64, 64, 64]
     elif args.dataset == 'imageNet':
         # quick test for pretrain resnet18
         maximum_fm_branch = [11, 15.5, 14, 11.5, 8.5, 14, 11.5, 101]
         dwt_coe_branch = [0.010, 0.013, 0.0094, 0.012, 0.010, 0.0061, 0.0069, 0.036]
+        maximum_fm_block = []
+        dwt_coe_block = []
         channel = [64, 64, 128, 128, 256, 256, 512, 512]
     else:
         raise NotImplementedError(
@@ -138,20 +144,21 @@ def main():
                                                     retain_ratio=args.retainRatio,
                                                     dwt_coe_branch=dwt_coe_branch)
 
-    # compress_list_block = compress_list_gen_block(channel, maximum_fm_block, args.wavelet, args.bit,
-    #                                               norm_mode=args.norm_mode,
-    #                                               retain_ratio=args.retainRatio)
+    compress_list_block = compress_list_gen_block(channel, maximum_fm_block, args.wavelet, args.bit,
+                                                  norm_mode=args.norm_mode,
+                                                  retain_ratio=args.retainRatio,
+                                                  dwt_coe_block=dwt_coe_block)
 
-    '''if args.dataset == 'imageNet':
+    if args.dataset == 'imageNet':
         net_dic = torch.load(args.load)
         net_dic_fix = utils.imagenet_model_graph_mapping(net_dic, [2, 2, 2, 2])
         model.load_state_dict(net_dic_fix)
     else:
-        utils.load(model, args)'''
+        utils.load(model, args)
 
     model.compress_replace_branch(compress_list_branch)
-    # model.compress_replace_inblock(compress_list_block)
-    utils.load(model, args)
+    model.compress_replace_inblock(compress_list_block)
+    # utils.load(model, args)
 
     '''
     for compress in model.stages.compress:
@@ -169,10 +176,11 @@ def main():
     fm_hd = infer_result_handler.HandlerFm(print_fn=logging.info)
     # tr_hd = infer_result_handler.HandlerDCT_Fm(print_fn=logging.info, save=args.save, code_length_dict=code_length_dict)
     tr_hd = infer_result_handler.HandlerDWT_Fm(print_fn=logging.info, save=args.save, code_length_dict=code_length_dict,
-                                               is_inblock=False)
+                                               is_inblock=True)
     # tr_hd = infer_result_handler.HandlerMaskedDWT_Fm(print_fn=logging.info, save=args.save,
     #                                                  code_length_dict=code_length_dict, is_inblock=False)
-    # tr_hd = infer_result_handler.HandlerQuanti(print_fn=logging.info, code_length_dict=u_code_length_dict)
+    # tr_hd = infer_result_handler.HandlerQuanti(print_fn=logging.info, save=args.save,
+    #                                            code_length_dict=u_code_length_dict)
     # tr_hd = infer_result_handler.HandlerTrans(print_fn=logging.info)
     # handler_list = [fm_hd, tr_hd, acc_hd]
     handler_list = [tr_hd, acc_hd]

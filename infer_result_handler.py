@@ -744,17 +744,18 @@ class HandlerQuadTree(InferResultHandler):
         leaf 0: 0
         leaf other: 2
         Args:
-            x (Torch.Tensor):
+            x (torch.Tensor): input
 
         Returns:
             Quadtree Matrix representation
         """
+
         if x.size(-1) > 1 or x.size(-2) > 1:
             output = torch.zeros_like(x).byte()
-            TR = x[..., 1::2, 1::2].abs() > self.eps
-            DR = x[..., 0::2, 1::2].abs() > self.eps
-            TL = x[..., 1::2, 0::2].abs() > self.eps
-            DL = x[..., 0::2, 0::2].abs() > self.eps
+            TR = (x[..., 1::2, 1::2].abs() > self.eps).byte()
+            DR = (x[..., 0::2, 1::2].abs() > self.eps).byte()
+            TL = (x[..., 1::2, 0::2].abs() > self.eps).byte()
+            DL = (x[..., 0::2, 0::2].abs() > self.eps).byte()
 
             output[..., 1::2, 1::2] = TR
             output[..., 0::2, 1::2] = DR
@@ -764,21 +765,29 @@ class HandlerQuadTree(InferResultHandler):
             cuty = False
             if output.size(-1) % 2:
                 cutx = True
-                TR = torch.cat([TR, torch.zeros(TR.size(0), TR.size(1), TR.size(2), 1).byte().cuda()], dim=-1)
-                DR = torch.cat([DR, torch.zeros(DR.size(0), DR.size(1), DR.size(2), 1).byte().cuda()], dim=-1)
+                ext_size_TR = list(TR.size())
+                ext_size_DR = list(DR.size())
+                ext_size_TR[-1] = 1
+                ext_size_DR[-1] = 1
+                TR = torch.cat([TR, torch.zeros(*ext_size_TR).byte().cuda()], dim=-1)
+                DR = torch.cat([DR, torch.zeros(*ext_size_DR).byte().cuda()], dim=-1)
             if output.size(-2) % 2:
                 cuty = True
-                TR = torch.cat([TR, torch.zeros(TR.size(0), TR.size(1), 1, TR.size(3)).byte().cuda()], dim=-2)
-                TL = torch.cat([TL, torch.zeros(TL.size(0), TL.size(1), 1, TL.size(3)).byte().cuda()], dim=-2)
+                ext_size_TR = list(TR.size())
+                ext_size_TL = list(TL.size())
+                ext_size_TR[-2] = 1
+                ext_size_TL[-2] = 1
+                TR = torch.cat([TR, torch.zeros(*ext_size_TR).byte().cuda()], dim=-2)
+                TL = torch.cat([TL, torch.zeros(*ext_size_TL).byte().cuda()], dim=-2)
 
-            childs = self.to_quadtreeM((DL + TR + DR + TL).abs() > self.eps)
+            childs = self.to_quadtreeM(((DL + TR + DR + TL).abs() > self.eps).byte())
             output[..., 0::2, 0::2] += childs
             if cutx and cuty:
                 output[..., -1, -1] -= childs[..., -1, -1]
 
             return output
         else:
-            output = x.abs() > self.eps
+            output = (x.abs() > self.eps).byte()
             return output
 
     def print_result(self):

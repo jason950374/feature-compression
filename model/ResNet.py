@@ -220,12 +220,7 @@ class ResNetStages(nn.Module):
         """
         self.compress = copy.deepcopy(compress_new)
         if type(self.compress) is list or type(self.compress) is tuple:
-            for idx, module in enumerate(self.compress):
-                name = "compress" + str(idx)
-                if name in self._modules:
-                    self._modules[name] = module
-                else:
-                    self.add_module(name, module)
+            self.compress = nn.ModuleList(self.compress)
 
     def compress_replace_inblock(self, compress_new):
         for idx, block in enumerate(self.layers):

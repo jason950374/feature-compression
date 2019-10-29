@@ -87,13 +87,31 @@ def softmin_bi(x, mid=0.5, tau=1.):
 
 
 class EncoderDecoderPair(nn.Module):
-    # TODO: finishing doc
+    r"""
+    Abstract class for EncoderDecoderPair
+    A EncoderDecoderPair put pair of encoder and decoder in same module, which usually share same parameters
+
+    Args:
+
+    Returns:
+
+    """
     is_bypass = False
 
     def __init__(self):
         super(EncoderDecoderPair, self).__init__()
 
     def forward(self, x, is_encoder=True):
+        r"""
+        Guarantee the forward include "is_encoder" to toggle encoder mode or decoder mode
+
+        Args:
+            x: inputs
+            is_encoder (bool): is_encoder indicates that that module act as encoder or decoder
+
+        Returns:
+
+        """
         raise NotImplementedError
 
     def update(self):
@@ -219,7 +237,9 @@ class CompressDWT(EncoderDecoderPair):
             ll, xh, size = self.DWT(x)
             ll = ll / self.q_table[-1]
             if quanti:
+                # ll_org = ll
                 ll = random_round(ll, self.rand_factor)
+                # assert (ll_org - ll).abs().max() < (10 ** -3), (ll_org - ll).abs().max()
                 ll = ll.clamp(-2 ** (self.bit - 1), 2 ** (self.bit - 1) - 1)
                 '''
                 ll_soft = softmin_round(ll, min_int=-2 ** (self.bit - 1), max_int=2 ** (self.bit - 1) - 1, tau=2)
@@ -229,7 +249,9 @@ class CompressDWT(EncoderDecoderPair):
             for i in range(self.level):
                 xh[i] = xh[i] / self.q_table[i]
                 if quanti:
+                    # xh_org = xh[i]
                     xh[i] = random_round(xh[i], self.rand_factor)
+                    # assert (xh_org - xh[i]).abs().max() < (10 ** -3), (xh_org - xh[i]).abs().max()
                     xh[i] = xh[i].clamp(-2 ** (self.bit - 1), 2 ** (self.bit - 1) - 1)
                     '''
                     xh_soft = softmin_round(xh[i], min_int=-2 ** (self.bit - 1), max_int=2 ** (self.bit - 1) - 1, tau=2)
@@ -723,6 +745,11 @@ class DownSampleBranch(nn.Sequential):
 
 
 class DualPath(nn.Sequential):
+    r"""
+    Args:
+        separate (nn.Module): a module that get one input and produce two output
+        module (nn.Module): a module that handle two paths produced by "separate" module
+    """
     def __init__(self, separate, module):
         super(DualPath, self).__init__()
         self.separate = separate
@@ -738,7 +765,7 @@ class DualPath(nn.Sequential):
             return x_path_0, x_path_1
         else:
             x, _ = x
-            x = self.module(x, is_encoder=False)  # TODO only one pass?
+            x = self.module(x, is_encoder=False)
             x = self.separate(x, is_encoder=False)
             return x
 
@@ -800,7 +827,7 @@ class Compress(nn.Module):
     Forward do both encode and decode
 
     Args:
-        compress (nn.Module): compress module, need to have both encode and decode ability
+        compress (EncoderDecoderPair): compress module, need to have both encode and decode ability
 
     Returns:
         x, fm_transforms

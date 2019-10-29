@@ -46,7 +46,7 @@ class HistMeter:
         If the in_stream is integer,it can be implemented with torch.bincount
 
     """
-    eps = 10 ** -4
+    eps = 10 ** -3
     _init_max = -2 ** 40
     _init_min = 2 ** 40
 
@@ -76,7 +76,11 @@ class HistMeter:
         with torch.no_grad():
             assert (((in_stream % 1) >= (1 - HistMeter.eps)) | ((in_stream % 1) < HistMeter.eps)).min(), \
                 "in_stream need to be integers"
-            in_stream = (in_stream + HistMeter.eps).int()
+            pos_mask = (in_stream >= 0).long()
+            neg_mask = (in_stream < 0).long()
+            in_stream_org = in_stream
+            in_stream = (in_stream + HistMeter.eps).long() * pos_mask + \
+                        (in_stream - HistMeter.eps).long() * neg_mask
             in_stream = in_stream.view(-1)
             min_in = int(in_stream.min())
             max_in = int(in_stream.max())
@@ -92,7 +96,7 @@ class HistMeter:
                     org_hist = self.hist
                     self.hist = torch.zeros([(self.max + right_extd + 1) - (self.min - left_extd)])
                     self.hist = self.hist.to(device=org_hist.device, dtype=org_hist.dtype)
-                    self.hist[left_extd:(left_extd+self.max-self.min+1)] = org_hist
+                    self.hist[left_extd:(left_extd + self.max - self.min + 1)] = org_hist
                     self.max = self.max + right_extd
                     self.min = self.min - left_extd
                 in_stream = in_stream - self.min
@@ -119,6 +123,7 @@ class HistMeter:
             weight = []
             for code in range(self.min, self.max + 1):
                 weight.append(code_length_dict[code])
+
             weight = torch.tensor(weight).to(device=self.hist.device, dtype=self.hist.dtype)
 
             total_len = (self.hist * weight).sum()

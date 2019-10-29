@@ -71,6 +71,7 @@ def compress_list_gen_branch(channel, maximum_fm, wavelet='db2', bit=8, dwt_coe_
         q_factor = maximum_fm[i] / (2 ** bit - 1)
 
         q_table_dwt = torch.tensor([1, 1, 1, 1], dtype=torch.get_default_dtype())
+        # q_table_dwt = torch.tensor([0.5, 0.25, 0.125, 0.125], dtype=torch.get_default_dtype())
         q_list_dct = [25, 25, 25, 25, 25, 25, 25, 25,
                       25, 25, 25, 25, 25, 25, 25]
 
@@ -81,7 +82,7 @@ def compress_list_gen_branch(channel, maximum_fm, wavelet='db2', bit=8, dwt_coe_
         freq_select = freq_selects[i] if freq_selects is not None else None
 
         # c = quant(bit, q_factor)
-        # c = dwt(q_table_dwt, wavelet, bit, q_factor)
+        # c = dwt(q_table_dwt, wavelet, bit, q_factor, shift=False)
         # c = with_mask_M(channel[i], q_table_dwt, wavelet, bit, q_factor, norm_mode, retain_ratio, tau_mask)
         c = with_mask(channel[i], q_table_dwt, wavelet, bit, q_factor, norm_mode, retain_ratio, tau_mask,
                       freq_select=freq_select)

@@ -105,8 +105,6 @@ def main():
         torch.cuda.manual_seed_all(args.seed)
         cudnn.deterministic = True
 
-    cudnn.benchmark = True
-
     logging.info("args = %s", args)
 
     # Set the data loader

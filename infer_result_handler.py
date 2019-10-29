@@ -295,7 +295,7 @@ class HandlerTrans(InferResultHandler):
 
 class HandlerDWT_Fm(InferResultHandler):
     def __init__(self, print_fn=print, save="./", code_length_dict=None, print_sparsity=True, print_range_all=False,
-                 print_range_layer=True, is_inblock=False, is_branch=True):
+                 print_range_layer=True, print_mean_layer=False, is_inblock=False, is_branch=True):
         self.states_updated = False
         self.zero_cnt = 0
         self.size_flat = 0
@@ -322,6 +322,7 @@ class HandlerDWT_Fm(InferResultHandler):
         self.is_print_sparsity = print_sparsity
         self.is_print_range_all = print_range_all
         self.is_print_range_layer = print_range_layer
+        self.is_print_mean_layer = print_mean_layer
 
     def update_batch(self, result, inputs=None):
         with torch.no_grad():
@@ -440,7 +441,8 @@ class HandlerDWT_Fm(InferResultHandler):
             self.print_fn("range: ({}, {})".format(self.min, self.max))
         if self.is_print_range_layer:
             self._print_range_layer()
-        self._print_mean_layer()
+        if self.is_print_mean_layer:
+            self._print_mean_layer()
         self.print_fn("code length {}".format(self.code_len))
         self.print_fn("Compress rate {}/{}= {}".format(self.size_flat * 8, self.code_len,
                                                        self.size_flat * 8 / self.code_len))
@@ -457,6 +459,7 @@ class HandlerDWT_Fm(InferResultHandler):
 
             if self.code_length_dict is not None:
                 self.code_len += xl_hist.get_bit_cnt(self.code_length_dict)
+                print(xl_hist.get_bit_cnt(self.code_length_dict))
 
             for i, xh_hist in enumerate(xh_hists):
                 xh_hist.plt_hist(plt_fn=ax)
@@ -465,6 +468,7 @@ class HandlerDWT_Fm(InferResultHandler):
                 xh_hist.save_hist_json('{}/{}Layer{}_XH_{}.json'.format(self.save, prefix, layer_num, i))
                 if self.code_length_dict is not None:
                     self.code_len += xh_hist.get_bit_cnt(self.code_length_dict)
+                    print(xh_hist.get_bit_cnt(self.code_length_dict))
 
     def _print_sparsity(self):
         self.print_fn("fm_transforms == 0: {}".format(self.zero_cnt))
@@ -488,12 +492,13 @@ class HandlerDWT_Fm(InferResultHandler):
                 self.print_fn("mean XH{} in layer{}: {}".format(level, layer_num, meter.avg))
 
     def set_config(self, code_length_dict=None, print_sparsity=True, print_range_all=False,
-                   print_range_layer=True):
+                   print_range_layer=True, print_mean_layer=False):
         self.states_updated = False
         self.code_length_dict = code_length_dict
         self.is_print_sparsity = print_sparsity
         self.is_print_range_all = print_range_all
         self.is_print_range_layer = print_range_layer
+        self.is_print_mean_layer = print_mean_layer
 
 
 class HandlerMaskedDWT_Fm(InferResultHandler):
@@ -502,15 +507,17 @@ class HandlerMaskedDWT_Fm(InferResultHandler):
         self.states_updated = False
         self.zero_cnt = 0
         self.size_flat = 0
-        self.max_mins = []
+        self.max_mins_branch = []
+        self.max_mins_block = []
         self.max = -2 ** 40
         self.min = 2 ** 40
         self.code_len = 0
-        self.hist_meters = []
+        self.hist_meters_branch = []
+        self.hist_meters_block = []
         self.max_ch = []
         self.min_ch = []
         self.is_inblock = is_inblock
-        self.is_branch = is_branch  # TODO: add is_branch vs. is_inblock
+        self.is_branch = is_branch
 
         # IO
         self.print_fn = print_fn
@@ -524,16 +531,23 @@ class HandlerMaskedDWT_Fm(InferResultHandler):
         self.print_range_layer = print_range_layer
 
     def update_batch(self, result, inputs=None):
-        _, _, fm_transforms_batch, _, _ = result
+        _, _, fm_transforms_batch, _, fm_transforms_block = result
         assert len(fm_transforms_batch) != 0, "Nothing in fm_transforms_batch!!!"
         self.states_updated = False
+        if self.is_branch:
+            for layer_num, feature_map_batch in enumerate(fm_transforms_batch):
+                assert type(feature_map_batch) is tuple, "fm_transform_batch is not tuple, make sure it's DWT"
+                x_dwt_remain, x_dwt_masked = feature_map_batch
 
-        for layer_num, feature_map_batch in enumerate(fm_transforms_batch):
-            assert type(feature_map_batch) is tuple, "fm_transform_batch is not tuple, make sure it's DWT"
-            x_dwt_remain, x_dwt_masked = feature_map_batch
+                self._update_dwt(x_dwt_remain, layer_num, self.max_mins_branch, self.hist_meters_branch, masked=False)
+                self._update_dwt(x_dwt_masked, layer_num, self.max_mins_branch, self.hist_meters_branch, masked=True)
+        if self.is_inblock:
+            for layer_num, feature_map_block in enumerate(fm_transforms_block):
+                assert type(feature_map_block) is tuple, "fm_transform_batch is not tuple, make sure it's DWT"
+                x_dwt_remain, x_dwt_masked = feature_map_block
 
-            self._update_dwt(x_dwt_remain, layer_num, self.max_mins, self.hist_meters, masked=False)
-            self._update_dwt(x_dwt_masked, layer_num, self.max_mins, self.hist_meters, masked=True)
+                self._update_dwt(x_dwt_remain, layer_num, self.max_mins_block, self.hist_meters_block, masked=False)
+                self._update_dwt(x_dwt_masked, layer_num, self.max_mins_block, self.hist_meters_block, masked=True)
 
     def _update_dwt(self, feature_map_dwt, layer_num, max_mins, hist_meters, masked=False):
         assert type(feature_map_dwt) is tuple, "feature_map_dwt is not tuple, make sure it's DWT"
@@ -590,15 +604,24 @@ class HandlerMaskedDWT_Fm(InferResultHandler):
     def print_result(self):
         if not self.states_updated:
             if self.print_range_all:
-                for layer_num, meter in enumerate(self.max_mins):
-                    self.max = max(self.max, meter.max)
-                    self.min = min(self.min, meter.min)
+                if self.is_branch:
+                    for layer_num, meter in enumerate(self.max_mins_branch):
+                        self.max = max(self.max, meter.max)
+                        self.min = min(self.min, meter.min)
+                if self.is_inblock:
+                    for layer_num, meter in enumerate(self.max_mins_block):
+                        self.max = max(self.max, meter.max)
+                        self.min = min(self.min, meter.min)
 
             self.code_len = 0
             figure = plt.figure()
             ax = figure.add_subplot(1, 1, 1)
 
-            self._update_after_config(figure, ax, self.hist_meters)
+            if self.is_branch:
+                self._update_after_config(figure, ax, self.hist_meters_branch, 'branch_')
+
+            if self.is_inblock:
+                self._update_after_config(figure, ax, self.hist_meters_block, 'block_')
 
             self.states_updated = True
 
@@ -610,8 +633,12 @@ class HandlerMaskedDWT_Fm(InferResultHandler):
         if self.print_range_all:
             self.print_fn("range: ({}, {})".format(self.min, self.max))
         if self.print_range_layer:
-            for layer_num, meter in enumerate(self.max_mins):
-                self.print_fn("range in layer{}:  ({}, {})".format(layer_num, meter.max, meter.min))
+            if self.is_branch:
+                for layer_num, meter in enumerate(self.max_mins_branch):
+                    self.print_fn("range in layer{}:  ({}, {})".format(layer_num, meter.max, meter.min))
+            if self.is_inblock:
+                for layer_num, meter in enumerate(self.max_mins_block):
+                    self.print_fn("range in layer{}:  ({}, {})".format(layer_num, meter.max, meter.min))
         self.print_fn("code length {}".format(self.code_len))
         self.print_fn("Compress rate {}/{}= {}".format(self.size_flat * 8, self.code_len,
                                                        self.size_flat * 8 / self.code_len))
@@ -796,5 +823,4 @@ class HandlerQuadTree(InferResultHandler):
         for key, value in self.level.items():
             self.print_fn("level: {}, diff: {}".format(key, value))
         self.print_fn("==============================================================")
-
 

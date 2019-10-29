@@ -82,9 +82,7 @@ def main():
         np.random.seed(args.seed)
         torch.manual_seed(args.seed)
         torch.cuda.manual_seed(args.seed)
-        cudnn.deterministic = True
-
-    cudnn.benchmark = True
+    cudnn.deterministic = True
 
     logging.info("args = %s", args)
 
@@ -121,7 +119,8 @@ def main():
     if args.dataset == 'cifar10':
         # quick test for this ckpts: cifar10_resnet20_0409_184724
         maximum_fm_branch = [5.2, 6.7, 5.3, 5.8, 6.7, 7.6, 4.6, 5.7, 36]
-        dwt_coe_branch = [0.018, 0.021, 0.022, 0.020, 0.019, 0.017, 0.018, 0.014, 0.047]
+        # dwt_coe_branch = [0.018, 0.021, 0.022, 0.020, 0.019, 0.017, 0.018, 0.014, 0.047]
+        dwt_coe_branch = [1, 1, 1, 1, 1, 1, 1, 1, 1]
         # dwt_coe_branch = [0.019, 0.014, 0.017, 0.017, 0.014, 0.013, 0.0081, 0.010, 0.025]
         # dwt_coe_branch = [0.013, 0.0098, 0.013, 0.012, 0.011, 0.0094, 0.0072, 0.012, 0.024]
         # dwt_coe_branch = [0.011, 0.0080, 0.010, 0.0075, 0.0075, 0.0095, 0.0086, 0.0099, 0.014]
@@ -157,7 +156,7 @@ def main():
         utils.load(model, args)
 
     model.compress_replace_branch(compress_list_branch)
-    model.compress_replace_inblock(compress_list_block)
+    # model.compress_replace_inblock(compress_list_block)
     # utils.load(model, args)
 
     '''
@@ -170,13 +169,13 @@ def main():
 
     logging.info("param size = %fMB", utils.count_parameters_in_MB(model))
 
-    code_length_dict = utils.gen_signed_seg_dict(args.k, 2 ** (args.bit-1))
+    code_length_dict = utils.gen_signed_seg_dict(args.k, 2 ** (args.bit-1 + 8))
     u_code_length_dict = utils.gen_seg_dict(args.k, 2 ** args.bit)
     acc_hd = infer_result_handler.HandlerAcc(print_fn=logging.info)
     fm_hd = infer_result_handler.HandlerFm(print_fn=logging.info)
     # tr_hd = infer_result_handler.HandlerDCT_Fm(print_fn=logging.info, save=args.save, code_length_dict=code_length_dict)
     tr_hd = infer_result_handler.HandlerDWT_Fm(print_fn=logging.info, save=args.save, code_length_dict=code_length_dict,
-                                               is_inblock=True)
+                                               is_inblock=False)
     # tr_hd = infer_result_handler.HandlerMaskedDWT_Fm(print_fn=logging.info, save=args.save,
     #                                                  code_length_dict=code_length_dict, is_inblock=False)
     # tr_hd = infer_result_handler.HandlerQuanti(print_fn=logging.info, save=args.save,
@@ -189,14 +188,14 @@ def main():
 
     for handler in handler_list:
         handler.print_result()
-    '''
+
     for k in range(2, 6):
         logging.info("===========   {}   ===========".format(k))
         # code_length_dict = utils.gen_signed_seg_dict(k, 2 ** (args.bit-1))
         # tr_hd.set_config(code_length_dict)
-        u_code_length_dict = utils.gen_seg_dict(k, 256)
+        u_code_length_dict = utils.gen_signed_seg_dict(k, 2 ** (args.bit-1 + 8))
         tr_hd.set_config(u_code_length_dict)
-        tr_hd.print_result()'''
+        tr_hd.print_result()
 
 
 if __name__ == '__main__':

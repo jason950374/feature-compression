@@ -9,13 +9,9 @@ import torchvision.transforms as transforms
 from torch.autograd import Variable
 import torchvision.datasets as datasets
 from typing import Tuple
-from collections.abc import Iterable, MappingView
-import matplotlib
-import model.compress as compress
+from collections.abc import Iterable
 
-from meter import AverageMeter
-
-matplotlib.use('Agg')
+from utils.meter import AverageMeter
 
 
 def create_exp_dir(path, scripts_to_save=None):
@@ -153,11 +149,11 @@ def count_parameters_in_MB(model):
     return np.sum(np.prod(v.size()) for v in model.parameters()) / 1e6
 
 
-def save_checkpoint(model, is_best, save, n_epoch):
+def save_checkpoint(model, is_best, save, optimizer=None):
     filename = os.path.join(save, 'last.pth')
     state = {
         'net': model.state_dict(),
-        'n_epoch': n_epoch
+        'optimizer': optimizer.state_dict() if optimizer is not None else None
     }
     torch.save(state, filename)
     if is_best:
@@ -165,7 +161,7 @@ def save_checkpoint(model, is_best, save, n_epoch):
         shutil.copyfile(filename, best_filename)
 
 
-def load(model, args):
+def load(model, args, optimizer=None):
     model_path = args.load
     ckpt = torch.load(model_path)
     try:
@@ -175,7 +171,8 @@ def load(model, args):
         return
 
     model.load_state_dict(net_dic)
-    args.epoch_start = ckpt['n_epoch'] + 1
+    if optimizer is not None:
+        optimizer.load_state_dict(ckpt['optimizer'])
 
 
 def accuracy(output, target, topk=(1,)):

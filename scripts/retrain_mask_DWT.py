@@ -1,20 +1,15 @@
-import numpy as np
+from .utils import load_dataset_n_pretrain_model, infer_in_train
 import torch.cuda
 import torch.optim
 import glob
-import meter
-import utils
+from utils import utils, meter
 import argparse
 import logging
 import sys
 import os
 import time
-import random
-import torch.backends.cudnn as cudnn
-torch.autograd.set_detect_anomaly(True)
 
-from compress_setups import compress_list_gen_branch, compress_list_gen_block
-from model.ResNet import ResNetCifar, resnet18
+from scripts.compress_setups import compress_list_gen_branch
 from torch.autograd import Variable
 from model.compress import *
 
@@ -47,16 +42,11 @@ parser.add_argument('--rand_factor', type=float, default=0, help="rand_factor")
 parser.add_argument('--tauMask', type=float, default=2, help="tau for softmin in MaskCompressDWT")
 parser.add_argument('--tauLoss', type=float, default=2, help="tau for tanh in sparsity loss")
 parser.add_argument('--retainRatio', type=float, default=0.75, help="retaining ratio for MaskCompressDWT")
-parser.add_argument('--biloss_coe', type=float, default=1e-2, help="bipolar Loss for s")
-parser.add_argument('--gamma', type=float, default=0.1, help="gamma")
+parser.add_argument('--biloss_coe', type=float, default=1e-3, help="bipolar Loss for s")
+parser.add_argument('--gamma', type=float, default=0.1, help="gamma for lr_scheduler")
 
 args = parser.parse_args()
-# args.save = 'ckpts/retrain_{}_{}'.format(args.wavelet, args.load[6:-9])
-# args.save = 'ckpts/retrain_imageNet_s_sofmin_tau_{}_long_biLoss_{}_lr_{}_retainRatio_{}_{}'.\
-#    format(args.tauMask, args.biloss_coe, args.learning_rate, args.retainRatio, time.strftime("%m%d_%H%M%S"))
-# args.save = 'ckpts/retrain_linear_long_fix_reverse_lr_{}_retainRatio_{}_{}'.\
-#      format(args.learning_rate, args.retainRatio, time.strftime("%m%d_%H%M%S"))
-args.save = 'ckpts/retrain_long_lr_{}_{}_{}'.format(args.learning_rate, args.wavelet, time.strftime("%m%d_%H%M%S"))
+args.save = 'ckpt_new_cifar/retrain_lr_{}_{}_retainRatio_{}_{}'.format(args.learning_rate, args.wavelet, args.retainRatio, time.strftime("%m%d_%H%M%S"))
 
 args.learning_rate = args.learning_rate * args.batch_size / 256
 
@@ -74,7 +64,6 @@ data_time = meter.AverageMeter()
 if args.dataset == 'cifar10':
     args.num_classes = 10
     args.epochs = 80
-    # args.epochs = 50
     args.usage_weight = 2
     utils.multiply_adds = 2
 elif args.dataset == 'cifar100':
@@ -98,32 +87,9 @@ def main():
         logging.info('no gpu device available')
         sys.exit(1)
 
-    if args.seed != -1:
-        random.seed(args.seed)
-        np.random.seed(args.seed)
-        torch.manual_seed(args.seed)
-        torch.cuda.manual_seed_all(args.seed)
-        cudnn.deterministic = True
-
     logging.info("args = %s", args)
 
-    # Set the data loader
-    train_queue, test_queue = utils.get_loader(args)
-
-    # Build up the network
-    if args.dataset == 'cifar10':
-        # model = nn.DataParallel(ResNetCifar().cuda())
-        model = ResNetCifar(args.depth, args.classes_num).cuda()
-    elif args.dataset == 'imageNet':
-        # model = nn.DataParallel(resnet18().cuda())
-        if args.depth == 18:
-            model = resnet18().cuda()
-        else:
-            raise NotImplementedError(
-                'Depth:{} is not supported.'.format(args.depth))
-    else:
-        raise NotImplementedError(
-            '{} dataset is not supported. Only support cifar10, cifar100 and imageNet.'.format(args.dataset))
+    train_queue, test_queue, model = load_dataset_n_pretrain_model(args)
 
     logging.info("param size = %fMB", utils.count_parameters_in_MB(model))
 
@@ -134,6 +100,7 @@ def main():
             model.load_state_dict(net_dic_fix)
         else:
             utils.load(model, args)
+        args.epoch_start = 0
 
     freq_selects = None
     if args.dataset == 'cifar10':
@@ -216,17 +183,14 @@ def main():
     model.compress_replace_branch(compress_list_branch)
     # model.compress_replace_inblock(compress_list_block)
 
-    if args.epoch_start != 0:
-        utils.load(model, args)
-
-    utils.save_checkpoint(model, False, args.save, 0)
+    utils.save_checkpoint(model, False, args.save)
 
     # Set the optimizer
 
     settings = [
         {
             'setting_names': utils.get_param_names(model, 'freq_select'),
-            'lr': 0,  # args.learning_rate,
+            'lr': args.learning_rate,
             'weight_decay': 0,
             'momentum': 0
         },
@@ -240,13 +204,16 @@ def main():
     params = utils.optimizer_setting_separator(model, settings)
 
     optimizer = torch.optim.SGD(
-        # params,
-        model.parameters(),
-        lr=args.learning_rate,
-        # lr=0,
+        params,
+        # model.parameters(),
+        # lr=args.learning_rate,
+        lr=args.learning_rate * (10 ** - 5),
         momentum=args.momentum,
         weight_decay=args.weight_decay
     )
+
+    if args.epoch_start != 0:
+        utils.load(model, args, optimizer)
 
     # Set the objective function
     criterion = nn.CrossEntropyLoss()
@@ -256,7 +223,6 @@ def main():
 
     if args.dataset == 'cifar10' or args.dataset == 'cifar100':
         milestones = [40, 70]
-        # milestones = [20]
     elif args.dataset == 'imageNet':
         milestones = [20, 40]
     else:
@@ -264,21 +230,15 @@ def main():
 
     scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=milestones, gamma=args.gamma)
     length_code_dict = utils.gen_signed_seg_dict(args.k, 2 ** (args.bit - 1), len_key=True)
+    model.update()
 
-    # optimizer.param_groups[1]['initial_lr'] = args.learning_rate
-    # optimizer.param_groups[1]['lr'] = args.learning_rate
-
-    for _ in range(0, args.epoch_start):
-        scheduler.step()
-
-    for epoch in range(args.epoch_start, args.epochs):
-        scheduler.step()
-        '''if epoch <= 5:
-            optimizer.param_groups[0]['initial_lr'] = args.learning_rate * (10 ** (epoch - 5))
-            optimizer.param_groups[0]['lr'] = args.learning_rate * (10 ** (epoch - 5))'''
-        logging.info('[Train] Epoch = %d , LR = %e', epoch, scheduler.get_lr()[0])
+    for epoch in range(0, args.epochs):
+        logging.info('[Train] Epoch = %d , LR = %e, %e', epoch, scheduler.get_lr()[0], scheduler.get_lr()[1])
         is_best = False
         train(train_queue, model, criterion, optimizer, epoch, args, milestones, length_code_dict)
+        if epoch <= 5:
+            scheduler.base_lrs[0] = args.learning_rate * (10 ** (epoch - 4))
+        scheduler.step()
 
         # Evaluate the test accuracy
         if epoch > args.epochs_test:
@@ -290,8 +250,8 @@ def main():
                 for compress in model.stages.compress:
                     indx = compress.compress[-1].reorder()
                     compress.compress[0].reorder(indx)
-            model.update()
-            this_acc, _ = infer(test_queue, model)
+
+            this_acc, _ = infer_in_train(test_queue, model)
 
             if this_acc > best_test_acc:
                 best_test_acc = this_acc
@@ -302,7 +262,7 @@ def main():
 
             logging.info('Saved into %s', args.save)
 
-            utils.save_checkpoint(model, is_best, args.save, epoch)
+            utils.save_checkpoint(model, is_best, args.save, optimizer)
             logging.info('============================================================================')
 
 
@@ -320,10 +280,10 @@ def train(train_queue, model, criterion, optimizer, cur_epoch, args, milestones,
 
     total_epoch = 5 if warm_up else args.epochs
     suffix = 'Warm Up' if warm_up else 'Train'
-    '''if cur_epoch < 5:
+    if cur_epoch < 5:
         biloss_coe = args.biloss_coe * (10 ** (cur_epoch - 5))
     else:
-        biloss_coe = args.biloss_coe'''
+        biloss_coe = args.biloss_coe
 
     for step, (x, target) in enumerate(train_queue):
         data_time.update(time.time() - end)
@@ -338,7 +298,7 @@ def train(train_queue, model, criterion, optimizer, cur_epoch, args, milestones,
         classloss = criterion(logits, target)
         loss += classloss
         n = x.size(0)
-        '''
+
         if args.l1_coe > 1e-20:
             # l1 = utils.iterable_l1(fm_transforms)
             freq_selects = [compress.compress.module[-1].freq_select.detach() for compress in model.stages.compress]
@@ -375,16 +335,13 @@ def train(train_queue, model, criterion, optimizer, cur_epoch, args, milestones,
         else:
             biloss = 0
             for compress in model.stages.compress:
-                if abs(args.retainRatio - 0.5) < 0.000001:
-                    threshold = compress.compress[-1].freq_select.median()
-                else:
-                    kth = int(compress.compress[-1].freq_select.size(0) * args.retainRatio)
-                    threshold, _ = torch.kthvalue(compress.compress[-1].freq_select, kth)
-                    threshold2, _ = torch.kthvalue(compress.compress[-1].freq_select, kth + 1)
-                    threshold = (threshold + threshold2) / 2
+                kth = int(compress.compress[-1].freq_select.size(0) * args.retainRatio)
+                threshold, _ = torch.kthvalue(compress.compress[-1].freq_select, kth)
+                threshold2, _ = torch.kthvalue(compress.compress[-1].freq_select, kth + 1)
+                threshold = (threshold + threshold2) / 2
                 biloss += utils.bipolar(compress.compress[-1].freq_select,
                                         threshold.detach())
-            loss += (biloss * biloss_coe)'''
+            loss += (biloss * biloss_coe)
 
         optimizer.zero_grad()
         loss.backward()
@@ -394,14 +351,14 @@ def train(train_queue, model, criterion, optimizer, cur_epoch, args, milestones,
         nn.utils.clip_grad_norm_(param_trm, 0.1)
         optimizer.step()
 
-        # model.update()
+        model.update()
 
         prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
 
         top1.update(prec1.item(), n)
         top5.update(prec5.item(), n)
 
-        # biloss_meter.update(biloss.item(), n)
+        biloss_meter.update(biloss.item(), n)
         classloss_meter.update(classloss.item(), n)
 
         # measure elapsed time
@@ -417,25 +374,6 @@ def train(train_queue, model, criterion, optimizer, cur_epoch, args, milestones,
             time_remain = utils.getTime((((args.epochs - cur_epoch) * total_step) - step) * batch_time.avg)
             logging.info('[{}] Time: {:.4f} Data: {:.4f} Time remaining: {}'.format(
                 suffix, batch_time.avg, data_time.avg, time_remain))
-
-
-def infer(test_queue, model):
-    top1 = meter.AverageMeter()
-    top5 = meter.AverageMeter()
-    model.eval()
-    with torch.no_grad():
-        for step, (x, target) in enumerate(test_queue):
-            x = Variable(x).cuda()
-            target = Variable(target).cuda(async=True)
-
-            logits, _, _, _, _ = model(x)
-
-            prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
-            n = x.size(0)
-            top1.update(prec1.item(), n)
-            top5.update(prec5.item(), n)
-
-    return top1.avg, top5.avg
 
 
 if __name__ == '__main__':

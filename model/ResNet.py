@@ -165,16 +165,10 @@ class ResNetStages(nn.Module):
             planes_cur *= 2
 
         self.layers = nn.Sequential(*self.layers)
-        if type(compress) is list or type(compress) is tuple:
-            self.compress = copy.deepcopy(compress)
-        else:
-            self.compress = []
-            for _ in self.layers:
-                self.compress.append(copy.deepcopy(compress))
 
-        for idx, module in enumerate(self.compress):
-            if isinstance(module, nn.Module):
-                self.add_module("compress" + str(idx), module)
+        self.compress = copy.deepcopy(compress)
+        if type(self.compress) is list or type(self.compress) is tuple:
+            self.compress = nn.ModuleList(self.compress)
 
     @staticmethod
     def _make_layer(block, in_planes, planes, blocks, stride=1):
@@ -230,7 +224,7 @@ class ResNetStages(nn.Module):
                 block.compress_replace_inblock(copy.deepcopy(compress_new))
 
     def update(self):
-        if type(self.compress) is list or type(self.compress) is tuple:
+        if type(self.compress) is nn.ModuleList:
             for indx, block in enumerate(self.layers):
                 self.compress[indx].update()
                 block.update()

@@ -1,19 +1,15 @@
-import numpy as np
 import torch.cuda
 import glob
-import infer_result_handler
-import meter
-import utils
+
+from .utils import load_dataset_n_pretrain_model
+from utils import infer_result_handler, utils, meter
 import argparse
 import logging
 import sys
 import os
 import time
-import random
-import torch.backends.cudnn as cudnn
 
-from compress_setups import compress_list_gen_branch, compress_list_gen_block
-from model.ResNet import ResNetCifar, resnet18
+from scripts.compress_setups import compress_list_gen_branch, compress_list_gen_block
 from model.compress import *
 import matplotlib
 matplotlib.use('Agg')
@@ -39,7 +35,7 @@ parser.add_argument('--norm_mode', type=str, default='l1', help="coefficient of 
 parser.add_argument('--retainRatio', type=float, default=0.5, help="retaining ratio for MaskCompressDWT")
 
 args = parser.parse_args()
-args.save = 'ckpts/test_{}_resnet{}_{}'.format(args.dataset, args.depth, time.strftime("%m%d_%H%M%S"))
+args.save = 'ckpt_new_cifar/test_{}_resnet{}_{}'.format(args.dataset, args.depth, time.strftime("%m%d_%H%M%S"))
 
 
 utils.create_exp_dir(args.save, scripts_to_save=glob.glob('*.py'))
@@ -77,32 +73,9 @@ def main():
         logging.info('no gpu device available')
         sys.exit(1)
 
-    if args.seed >= 0:
-        random.seed(args.seed)
-        np.random.seed(args.seed)
-        torch.manual_seed(args.seed)
-        torch.cuda.manual_seed(args.seed)
-    cudnn.deterministic = True
-
     logging.info("args = %s", args)
 
-    # Set the data loader
-    train_queue, test_queue = utils.get_loader(args)
-
-    # Build up the network
-    if args.dataset == 'cifar10':
-        # model = nn.DataParallel(ResNetCifar().cuda())
-        model = ResNetCifar(args.depth, args.classes_num).cuda()
-    elif args.dataset == 'imageNet':
-        # model = nn.DataParallel(resnet18().cuda())
-        if args.depth == 18:
-            model = resnet18().cuda()
-        else:
-            raise NotImplementedError(
-                'Depth:{} is not supported.'.format(args.depth))
-    else:
-        raise NotImplementedError(
-            '{} dataset is not supported. Only support cifar10, cifar100 and imageNet.'.format(args.dataset))
+    train_queue, test_queue, model = load_dataset_n_pretrain_model(args)
 
     # Insert compress_block after load since compress_block not include in training phase in this case
     '''
@@ -111,16 +84,13 @@ def main():
     hd_maximum_fm.print_result()
     maximum_fm_branch = hd_maximum_fm.max_mins_branch.copy()
     maximum_fm_block = hd_maximum_fm.max_mins_block.copy()
-    print([maxMinMeter.max for maxMinMeter in maximum_fm_branch])
-    print([maxMinMeter.min for maxMinMeter in maximum_fm_branch])
-    print([maxMinMeter.max for maxMinMeter in maximum_fm_block])
-    print([maxMinMeter.min for maxMinMeter in maximum_fm_block])'''
+    '''
 
     if args.dataset == 'cifar10':
         # quick test for this ckpts: cifar10_resnet20_0409_184724
         maximum_fm_branch = [5.2, 6.7, 5.3, 5.8, 6.7, 7.6, 4.6, 5.7, 36]
-        # dwt_coe_branch = [0.018, 0.021, 0.022, 0.020, 0.019, 0.017, 0.018, 0.014, 0.047]
-        dwt_coe_branch = [1, 1, 1, 1, 1, 1, 1, 1, 1]
+        dwt_coe_branch = [0.018, 0.021, 0.022, 0.020, 0.019, 0.017, 0.018, 0.014, 0.047]
+        # dwt_coe_branch = [1, 1, 1, 1, 1, 1, 1, 1, 1]
         # dwt_coe_branch = [0.019, 0.014, 0.017, 0.017, 0.014, 0.013, 0.0081, 0.010, 0.025]
         # dwt_coe_branch = [0.013, 0.0098, 0.013, 0.012, 0.011, 0.0094, 0.0072, 0.012, 0.024]
         # dwt_coe_branch = [0.011, 0.0080, 0.010, 0.0075, 0.0075, 0.0095, 0.0086, 0.0099, 0.014]
@@ -148,28 +118,28 @@ def main():
                                                   retain_ratio=args.retainRatio,
                                                   dwt_coe_block=dwt_coe_block)
 
-    if args.dataset == 'imageNet':
+    '''if args.dataset == 'imageNet':
         net_dic = torch.load(args.load)
         net_dic_fix = utils.imagenet_model_graph_mapping(net_dic, [2, 2, 2, 2])
         model.load_state_dict(net_dic_fix)
     else:
-        utils.load(model, args)
+        utils.load(model, args)'''
 
     model.compress_replace_branch(compress_list_branch)
     # model.compress_replace_inblock(compress_list_block)
-    # utils.load(model, args)
+    utils.load(model, args)
 
     '''
     for compress in model.stages.compress:
         # m = compress.compress.separate.transform_matrix.data
         # compress.compress.separate.transform_matrix.data = torch.eye(m.size(0)).cuda()
         indx = compress.compress.module[-1].reorder()
-        compress.compress.separate.reorder(indx)
-    model.update()'''
+        compress.compress.separate.reorder(indx)'''
+    model.update()
 
     logging.info("param size = %fMB", utils.count_parameters_in_MB(model))
 
-    code_length_dict = utils.gen_signed_seg_dict(args.k, 2 ** (args.bit-1 + 8))
+    code_length_dict = utils.gen_signed_seg_dict(args.k, 2 ** (args.bit - 1))
     u_code_length_dict = utils.gen_seg_dict(args.k, 2 ** args.bit)
     acc_hd = infer_result_handler.HandlerAcc(print_fn=logging.info)
     fm_hd = infer_result_handler.HandlerFm(print_fn=logging.info)
@@ -179,7 +149,7 @@ def main():
     # tr_hd = infer_result_handler.HandlerMaskedDWT_Fm(print_fn=logging.info, save=args.save,
     #                                                  code_length_dict=code_length_dict, is_inblock=False)
     # tr_hd = infer_result_handler.HandlerQuanti(print_fn=logging.info, save=args.save,
-    #                                            code_length_dict=u_code_length_dict)
+    #                                            code_length_dict=u_code_length_dict, is_inblock=False)
     # tr_hd = infer_result_handler.HandlerTrans(print_fn=logging.info)
     # handler_list = [fm_hd, tr_hd, acc_hd]
     handler_list = [tr_hd, acc_hd]
@@ -193,7 +163,7 @@ def main():
         logging.info("===========   {}   ===========".format(k))
         # code_length_dict = utils.gen_signed_seg_dict(k, 2 ** (args.bit-1))
         # tr_hd.set_config(code_length_dict)
-        u_code_length_dict = utils.gen_signed_seg_dict(k, 2 ** (args.bit-1 + 8))
+        u_code_length_dict = utils.gen_seg_dict(k, 2 ** args.bit)
         tr_hd.set_config(u_code_length_dict)
         tr_hd.print_result()
 

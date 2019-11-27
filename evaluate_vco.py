@@ -12,13 +12,12 @@ from torch.autograd import Variable
 import model.FCN as FCN
 import torchfcn
 import tqdm
-import infer_result_handler
-import utils
+from utils import infer_result_handler, utils
 import time
 import logging
 import sys
 
-from compress_setups import compress_list_gen_block
+from scripts.compress_setups import compress_list_gen_block
 
 
 def main():

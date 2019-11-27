@@ -70,9 +70,10 @@ def softmin_bi(x, mid=0.5, tau=1.):
     r"""
     Implement softmin_round with sigmoid when quantization symbol is only {0, 2*mid}
     Significant speed up, always use this instead of softmin_round when possible
+    softmin_bi with 2*tau equivalent to softmin_round with tau
 
     .. math::
-        \frac{1}{1 + e^{\tau(-2x+2(1-\gamma))}}
+        \frac{1}{1 + e^{\tau(-x+(1-\gamma))}}
 
     Args:
         x (torch.Tensor): Input
@@ -532,6 +533,10 @@ class FtMapShiftNorm(EncoderDecoderPair):
 
             return x
 
+    @staticmethod
+    def fm_modifier(x):
+        return x[0]
+
 
 class Transform_seperate(EncoderDecoderPair):
     r"""
@@ -773,6 +778,10 @@ class DualPath(nn.Sequential):
         for module in self._modules.values():
             module.update()
 
+    @staticmethod
+    def fm_modifier(x):
+        return x[0]
+
 
 class BypassSequential(nn.Sequential):
     r"""
@@ -821,6 +830,10 @@ class BypassSequential(nn.Sequential):
         for module in self._modules.values():
             module.update()
 
+    @staticmethod
+    def fm_modifier(x):
+        return x[0]
+
 
 class Compress(nn.Module):
     """
@@ -833,15 +846,21 @@ class Compress(nn.Module):
         x, fm_transforms
     """
 
-    def __init__(self, compress):
+    def __init__(self, compress, modifiers=None):
         super(Compress, self).__init__()
         self.compress = compress
+        if modifiers is not None:
+            self.modifiers = modifiers
+        else:
+            self.modifiers = []
 
     def forward(self, x):
         fm_transforms = self.compress(x, is_encoder=True)
         x = self.compress(fm_transforms, is_encoder=False)
+        for modifier in self.modifiers:
+            fm_transforms = modifier(fm_transforms)
 
-        return x, fm_transforms[0]  # TODO ugly
+        return x, fm_transforms
 
     def update(self):
         self.compress.update()

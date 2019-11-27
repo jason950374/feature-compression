@@ -1,7 +1,7 @@
 import torch
 
-from utils import accuracy
-from meter import *
+from utils.utils import accuracy
+from utils.meter import *
 
 
 class InferResultHandler:
@@ -226,6 +226,7 @@ class HandlerQuanti(InferResultHandler):
     def set_config(self, code_length_dict=None, print_sparsity=True, print_range_all=False, print_range_layer=True):
         self.code_length_dict = code_length_dict
         if self.code_length_dict is not None:
+            self.code_len = 0
             for meter in self.hist_meters_branch:
                 self.code_len += meter.get_bit_cnt(self.code_length_dict)
             for meter in self.hist_meters_block:
@@ -459,7 +460,6 @@ class HandlerDWT_Fm(InferResultHandler):
 
             if self.code_length_dict is not None:
                 self.code_len += xl_hist.get_bit_cnt(self.code_length_dict)
-                print(xl_hist.get_bit_cnt(self.code_length_dict))
 
             for i, xh_hist in enumerate(xh_hists):
                 xh_hist.plt_hist(plt_fn=ax)
@@ -468,7 +468,6 @@ class HandlerDWT_Fm(InferResultHandler):
                 xh_hist.save_hist_json('{}/{}Layer{}_XH_{}.json'.format(self.save, prefix, layer_num, i))
                 if self.code_length_dict is not None:
                     self.code_len += xh_hist.get_bit_cnt(self.code_length_dict)
-                    print(xh_hist.get_bit_cnt(self.code_length_dict))
 
     def _print_sparsity(self):
         self.print_fn("fm_transforms == 0: {}".format(self.zero_cnt))
@@ -492,7 +491,7 @@ class HandlerDWT_Fm(InferResultHandler):
                 self.print_fn("mean XH{} in layer{}: {}".format(level, layer_num, meter.avg))
 
     def set_config(self, code_length_dict=None, print_sparsity=True, print_range_all=False,
-                   print_range_layer=True, print_mean_layer=False):
+                   print_range_layer=True, print_mean_layer=True):
         self.states_updated = False
         self.code_length_dict = code_length_dict
         self.is_print_sparsity = print_sparsity

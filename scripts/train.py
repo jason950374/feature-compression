@@ -5,8 +5,7 @@ import torch.cuda
 import torch.optim
 import glob
 
-import meter
-import utils
+from utils import utils, meter
 import argparse
 import logging
 import sys

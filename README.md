@@ -21,3 +21,6 @@
 * tornado==5.1.1
 * tqdm==4.28.1
 
+Part of code modified from
+https://github.com/fbcotter/pytorch_wavelets
+https://github.com/zh217/torch-dct
